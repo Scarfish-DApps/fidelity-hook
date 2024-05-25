@@ -7,3 +7,6 @@
 [submodule "lib/v4-core"]
 	path = lib/v4-core
 	url = https://github.com/uniswap/v4-core
+[submodule "lib/v2-core"]
+	path = lib/v2-core
+	url = https://github.com/sablier-labs/v2-core
