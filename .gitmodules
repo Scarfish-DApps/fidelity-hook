@@ -13,3 +13,6 @@
 [submodule "lib/brevis-contracts"]
 	path = lib/brevis-contracts
 	url = https://github.com/brevis-network/brevis-contracts
+[submodule "lib/Solidity-RLP"]
+	path = lib/Solidity-RLP
+	url = https://github.com/hamdiallam/Solidity-RLP
