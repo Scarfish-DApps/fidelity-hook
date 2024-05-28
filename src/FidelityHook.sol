@@ -8,6 +8,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {SwapFeeLibrary} from "v4-core/src/libraries/SwapFeeLibrary.sol";
+//import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 /* I Characteristics of individual pools:
  * 1. Upper/lower trade volume threshold for fee reduction.
@@ -67,9 +68,9 @@ contract FidelityHook is BaseHook {
         return Hooks.Permissions({
             beforeInitialize: true,
             afterInitialize: false,
-            beforeAddLiquidity: false,
+            beforeAddLiquidity: true,
             afterAddLiquidity: false,
-            beforeRemoveLiquidity: false,
+            beforeRemoveLiquidity: true,
             afterRemoveLiquidity: false,
             beforeSwap: true,
             afterSwap: true,
@@ -114,33 +115,109 @@ contract FidelityHook is BaseHook {
     }
 
     function beforeSwap(
-        address,
+        address sender,
         PoolKey calldata key,
         IPoolManager.SwapParams calldata,
         bytes calldata
     ) external override poolManagerOnly returns (bytes4) {
-        // Calculate how much fees to charge
-        //uint24 fee = getFee();
+        PoolId poolId = key.toId();
+        // Retrieve user's trading volume for current campaign provided by Brevis
+        uint256 volume = getUserVolume(sender, poolId);
+
+        // Update user's trading volume within current campaign with the new registered value
+        updateVolume(sender, poolId);
+
+        // Burn the fidelity tokens of last campaign if new one started
+        burnLastCampaignTokens();
+
+        // Retrieve user's amount of fidelity token
+        uint256 fidelityTokens = getUserFidelityTokens(sender, poolId);
+
+        // Calculate how much fees to charge based on amount of fidelity token
+        uint24 fee = calculateFee(fidelityTokens, poolId);
 
         // Update swapFee in the manager
-        //poolManager.updateDynamicSwapFee(key, fee);
+        poolManager.updateDynamicSwapFee(key, fee);
         return this.beforeSwap.selector;
     }
 
-    function afterSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata, BalanceDelta, bytes calldata)
+    function afterSwap(address sender, PoolKey calldata key, IPoolManager.SwapParams calldata, BalanceDelta, bytes calldata)
         external
         override
         returns (bytes4)
     {
-        //Register new balance of swapper as last seen balances
+        PoolId poolId = key.toId();
+
+        // Retrieve user's recorded trading volume
+        uint256 volume = getUserVolume(sender, poolId);
+
+        // Mint fidelity tokens based on user's trading volume
+        updateFidelityTokens(sender, volume, poolId);
+
         return BaseHook.afterSwap.selector;
     }
 
+    function beforeAddLiquidity(address, PoolKey calldata, IPoolManager.ModifyLiquidityParams calldata, bytes calldata)
+        external
+        virtual
+        override
+        returns (bytes4)
+    {
+        // Only allow new liquidity or recentering of existing ones.
+        onlyAllowRecentering();
+
+        return BaseHook.beforeAddLiquidity.selector;
+    }
+
+    function beforeRemoveLiquidity(
+        address,
+        PoolKey calldata,
+        IPoolManager.ModifyLiquidityParams calldata,
+        bytes calldata
+    ) external virtual override returns (bytes4) {
+        // Only allow LPs to withdraw liquidity if the campaign in which they locked passed.
+        checkIfCampaignPassed();
+
+        return BaseHook.beforeRemoveLiquidity.selector;
+    }
+
+    function getUserVolume(address user, PoolId pool) internal returns(uint256 volume){
+
+    }
+
     function updateVolume(address user, PoolId pool) internal {
+        checkNewCampaignAndResetVolume();
+    }
 
-    } 
+    function updateFidelityTokens(address user, uint256 volume, PoolId pool) internal {
 
-    function getFee(address user, PoolId pool) internal returns(uint24 fee){
-        
+    }
+
+    function calculateFee(uint256 fidelityTokens, PoolId pool) internal returns(uint24 fee){
+        fee = 3000;
+    }
+
+    function getUserFidelityTokens(address user, PoolId pool) internal returns (uint256 tokenAmount){
+
+    }
+
+    function getCurrentCampaign() internal returns (uint256 campaignId){
+
+    }
+
+    function checkNewCampaignAndResetVolume() internal {
+
+    }
+
+    function checkIfCampaignPassed() internal returns(bool) {
+
+    }
+
+    function onlyAllowRecentering() internal returns(bool) {
+
+    }
+
+    function burnLastCampaignTokens() internal {
+
     }
 }
