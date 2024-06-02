@@ -141,7 +141,7 @@ contract FidelityHook is BaseHook {
         return this.beforeSwap.selector;
     }
 
-    function afterSwap(address sender, PoolKey calldata key, IPoolManager.SwapParams calldata, BalanceDelta, bytes calldata)
+    function afterSwap(address sender, PoolKey calldata key, IPoolManager.SwapParams calldata swapParams, BalanceDelta delta, bytes calldata)
         external
         override
         returns (bytes4)
@@ -149,7 +149,7 @@ contract FidelityHook is BaseHook {
         PoolId poolId = key.toId();
 
         // Retrieve user's recorded trading volume
-        uint256 volume = getUserVolume(sender, poolId);
+        uint256 volume = calculateSwapVolume(swapParams, delta);
 
         // Mint fidelity tokens based on user's trading volume
         updateFidelityTokens(sender, volume, poolId);
@@ -179,6 +179,15 @@ contract FidelityHook is BaseHook {
         checkIfCampaignPassed();
 
         return BaseHook.beforeRemoveLiquidity.selector;
+    }
+
+    function calculateSwapVolume(
+        IPoolManager.SwapParams calldata swapParams,
+        BalanceDelta delta
+    ) internal returns(uint256 volume) {
+        volume = swapParams.zeroForOne
+            ? uint256(int256(-delta.amount0()))
+            : uint256(int256(delta.amount0()));
     }
 
     function getUserVolume(address user, PoolId pool) internal returns(uint256 volume){
