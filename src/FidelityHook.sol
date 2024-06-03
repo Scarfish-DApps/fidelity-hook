@@ -203,7 +203,25 @@ contract FidelityHook is BaseHook {
     }
 
     function calculateFee(uint256 fidelityTokens, PoolId pool) internal returns(uint24 fee){
-        fee = 3000;
+        (
+            ,
+            FidelityHook.Bound memory volThreshold,
+            FidelityHook.Bound memory feeLimits
+        ) = this.poolConfig(pool);
+
+        if (fidelityTokens < volThreshold.lower) {
+            return uint24(feeLimits.upper);
+        }
+
+        if (fidelityTokens > volThreshold.upper) {
+            return uint24(feeLimits.lower);
+        }
+ 
+        uint256 deltaFee = feeLimits.upper - feeLimits.lower;
+        uint256 feeDifference = (deltaFee * (fidelityTokens - volThreshold.lower))
+            / (volThreshold.upper - volThreshold.lower);
+
+        return uint24(feeLimits.upper - feeDifference);
     }
 
     function getUserFidelityTokens(address user, PoolId pool) internal returns (uint256 tokenAmount){
