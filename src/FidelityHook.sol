@@ -59,6 +59,9 @@ contract FidelityHook is BaseHook {
 
     mapping(PoolId => PoolConfig) public poolConfig;
     mapping(address => LastTradeInfo) public lastRegisteredBalances;
+    //address => campaign => poolId => amount
+    mapping(address => mapping(uint256 => mapping(bytes32 => int256))) public liquidityAmountPerCampaign;
+    mapping(uint256 => uint256) public campaignStartTime;
 
     error MustUseDynamicFee();
 
@@ -69,7 +72,7 @@ contract FidelityHook is BaseHook {
             beforeInitialize: true,
             afterInitialize: false,
             beforeAddLiquidity: true,
-            afterAddLiquidity: false,
+            afterAddLiquidity: true,
             beforeRemoveLiquidity: true,
             afterRemoveLiquidity: false,
             beforeSwap: true,
@@ -79,13 +82,13 @@ contract FidelityHook is BaseHook {
         });
     }
 
-    function beforeInitialize(
+  function beforeInitialize(
         address,
         PoolKey calldata key,
         uint160,
         bytes calldata hookData
     ) external override returns (bytes4) {
-        // `.isDynamicFee()` function comes from using 
+        // `.isDynamicFee()` function comes from using
         // the `SwapFeeLibrary` for `uint24`
         if (!key.fee.isDynamicFee()) revert MustUseDynamicFee();
 
@@ -95,7 +98,7 @@ contract FidelityHook is BaseHook {
             uint256 volLowerThreshold,
             uint24 feeUpperLimit,
             uint24 feeLowerLimit
-        ) = abi.decode(hookData,(
+          ) = abi.decode(hookData,(
             uint256,
             uint256,
             uint256,
@@ -113,7 +116,6 @@ contract FidelityHook is BaseHook {
 
         return this.beforeInitialize.selector;
     }
-
     function beforeSwap(
         address sender,
         PoolKey calldata key,
@@ -169,15 +171,26 @@ contract FidelityHook is BaseHook {
         return BaseHook.beforeAddLiquidity.selector;
     }
 
+    function afterAddLiquidity(
+        address,
+        PoolKey calldata poolKey,
+        IPoolManager.ModifyLiquidityParams calldata liquidityParams,
+        BalanceDelta,
+        bytes calldata
+    ) external virtual override returns (bytes4) {
+        updateStateAfterAddLiquidity(liquidityParams, poolKey);
+        revert HookNotImplemented();
+    }
+
     function beforeRemoveLiquidity(
         address,
-        PoolKey calldata,
-        IPoolManager.ModifyLiquidityParams calldata,
+        PoolKey calldata poolKey,
+        IPoolManager.ModifyLiquidityParams calldata liquidityParams,
         bytes calldata
     ) external virtual override returns (bytes4) {
         // Only allow LPs to withdraw liquidity if the campaign in which they locked passed.
-        checkIfCampaignPassed();
 
+        removeLiquidityCheck(liquidityParams, poolKey);
         return BaseHook.beforeRemoveLiquidity.selector;
     }
 
@@ -219,7 +232,23 @@ contract FidelityHook is BaseHook {
     }
 
     function checkIfCampaignPassed() internal returns(bool) {
+    
+    }
 
+
+    function removeLiquidityCheck(IPoolManager.ModifyLiquidityParams calldata liquidityParams, PoolKey calldata poolKey) internal returns (bool) {
+        uint256 campaignId = getCurrentCampaign();
+        require(block.timestamp < campaignStartTime[campaignId] || block.timestamp > campaignStartTime[campaignId] + 30 days, "You cannot remove liquidity during campaign");
+        int256 liquidityToRemove = liquidityParams.liquidityDelta;
+        require(liquidityToRemove < 0, "Invalid liquidity amount for removal");
+        bytes32 poolIdBytes32 = PoolId.unwrap(poolKey.toId());
+        require(liquidityAmountPerCampaign[msg.sender][campaignId][poolIdBytes32] > -liquidityToRemove,"You do not provide liquidity for this campaign");
+        liquidityAmountPerCampaign[msg.sender][campaignId][poolIdBytes32] -= liquidityToRemove;
+    }
+
+    function updateStateAfterAddLiquidity(IPoolManager.ModifyLiquidityParams calldata liquidityParams, PoolKey calldata poolKey) internal {
+        bytes32 poolIdBytes32 = PoolId.unwrap(poolKey.toId());
+        liquidityAmountPerCampaign[msg.sender][getCurrentCampaign()][poolIdBytes32] += liquidityParams.liquidityDelta;
     }
 
     function onlyAllowRecentering() internal returns(bool) {
