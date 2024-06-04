@@ -10,9 +10,8 @@ contract FidelityTokenFactory is ERC1155, Ownable {
         nextTokenId = 0;
     }
 
-    function createToken(uint256 initialSupply) external onlyOwner returns (uint256) {
+    function createToken() external onlyOwner returns (uint256) {
         uint256 tokenId = nextTokenId;
-        _mint(msg.sender, tokenId, initialSupply, "");
         nextTokenId++;
         return tokenId;
     }
