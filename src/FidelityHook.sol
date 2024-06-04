@@ -8,7 +8,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {SwapFeeLibrary} from "v4-core/src/libraries/SwapFeeLibrary.sol";
-//import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {FidelityTokenFactory} from "./FidelityTokenFactory.sol";}
 
 /* I Characteristics of individual pools:
  * 1. Upper/lower trade volume threshold for fee reduction.
@@ -35,7 +35,7 @@ import {SwapFeeLibrary} from "v4-core/src/libraries/SwapFeeLibrary.sol";
  *     decreases the efficacy of fee reduction a user reached with its volume beforehand? Or does
  *     a new LP/liquidty submit to the fee reduction percentage a user has already reached?
  */
-contract FidelityHook is BaseHook {
+contract FidelityHook is BaseHook, FidelityTokenFactory {
     using PoolIdLibrary for PoolKey;
     using SwapFeeLibrary for uint24;
 
@@ -52,15 +52,18 @@ contract FidelityHook is BaseHook {
     }
 
     struct PoolConfig {
-        uint256 timeInterval;
+        uint256 timeInterval;  // Represents the timestamp when the campaign will end ?
         Bound volumeThreshold;
         Bound feeLimits;
+        FidelityTokenFactory fidelityTokenFactory;
+        uint256 currentCampaignId;
     }
 
     mapping(PoolId => PoolConfig) public poolConfig;
     mapping(address => LastTradeInfo) public lastRegisteredBalances;
 
     error MustUseDynamicFee();
+    error CampaignNotEnded(); //TODO: use the custom error
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
@@ -105,10 +108,14 @@ contract FidelityHook is BaseHook {
 
         PoolId poolId = key.toId();
 
+        FidelityTokenFactory fidelityTokenFactory = new FidelityTokenFactory(tokenURI);
+
         poolConfig[poolId] = PoolConfig({
             timeInterval: interval,
             volumeThreshold: Bound({upper: volUpperThreshold, lower: volLowerThreshold}),
-            feeLimits: Bound({upper: uint256(feeUpperLimit), lower: uint256(feeLowerLimit)})
+            feeLimits: Bound({upper: uint256(feeUpperLimit), lower: uint256(feeLowerLimit)}),
+            fidelityTokenFactory: fidelityTokenFactory,
+            currentCampaignId: 0
         });
 
         return this.beforeInitialize.selector;
@@ -181,6 +188,16 @@ contract FidelityHook is BaseHook {
         return BaseHook.beforeRemoveLiquidity.selector;
     }
 
+    function startNewCampaign(PoolId poolId) external { //TODO: Double check with the team
+        PoolConfig storage config = poolConfig[poolId];
+        require(block.timestamp >= config.timeInterval, "CampaignNotEnded");
+
+        FidelityTokenFactory fidelityTokenFactory = FidelityTokenFactory(address(config.fidelityTokenFactory));
+        fidelityTokenFactory.resetCampaign();
+        config.currentCampaignId = fidelityTokenFactory.nextTokenId() - 1;
+        config.timeInterval = block.timestamp + config.timeInterval //TODO: Double check with the team
+    }
+
     function calculateSwapVolume(
         IPoolManager.SwapParams calldata swapParams,
         BalanceDelta delta
@@ -199,7 +216,9 @@ contract FidelityHook is BaseHook {
     }
 
     function updateFidelityTokens(address user, uint256 volume, PoolId pool) internal {
-
+        PoolConfig memory config = poolConfig[pool];
+        FidelityTokenFactory fidelityTokenFactory = config.fidelityTokenFactory;
+        fidelityTokenFactory.mint(user, config.currentCampaignId, volume);
     }
 
     function calculateFee(uint256 fidelityTokens, PoolId pool) internal returns(uint24 fee){
@@ -224,8 +243,10 @@ contract FidelityHook is BaseHook {
         return uint24(feeLimits.upper - feeDifference);
     }
 
-    function getUserFidelityTokens(address user, PoolId pool) internal returns (uint256 tokenAmount){
-
+    function getUserFidelityTokens(address user, PoolId pool) internal view returns (uint256 tokenAmount) {
+        PoolConfig memory config = poolConfig[pool];
+        FidelityTokenFactory fidelityTokenFactory = config.fidelityTokenFactory;
+        tokenAmount = fidelityTokenFactory.balanceOf(user, config.currentCampaignId);
     }
 
     function getCurrentCampaign() internal returns (uint256 campaignId){
