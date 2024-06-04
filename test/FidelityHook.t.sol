@@ -74,6 +74,8 @@ contract FidelityHookTest is Test, Deployers {
             uint256 interval,
             FidelityHook.Bound memory volThreshold,
             FidelityHook.Bound memory feeLimits
+            ,
+            ,
         ) = fidelityHook.poolConfig(key.toId());
 
         assertEq(interval, 7 days);

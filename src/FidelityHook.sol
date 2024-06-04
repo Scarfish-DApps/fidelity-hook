@@ -8,7 +8,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {SwapFeeLibrary} from "v4-core/src/libraries/SwapFeeLibrary.sol";
-import {FidelityTokenFactory} from "./FidelityTokenFactory.sol";}
+import {FidelityTokenFactory} from "./FidelityTokenFactory.sol";
 
 /* I Characteristics of individual pools:
  * 1. Upper/lower trade volume threshold for fee reduction.
@@ -35,7 +35,7 @@ import {FidelityTokenFactory} from "./FidelityTokenFactory.sol";}
  *     decreases the efficacy of fee reduction a user reached with its volume beforehand? Or does
  *     a new LP/liquidty submit to the fee reduction percentage a user has already reached?
  */
-contract FidelityHook is BaseHook, FidelityTokenFactory {
+contract FidelityHook is BaseHook {
     using PoolIdLibrary for PoolKey;
     using SwapFeeLibrary for uint24;
 
@@ -108,7 +108,7 @@ contract FidelityHook is BaseHook, FidelityTokenFactory {
 
         PoolId poolId = key.toId();
 
-        FidelityTokenFactory fidelityTokenFactory = new FidelityTokenFactory(tokenURI);
+        FidelityTokenFactory fidelityTokenFactory = new FidelityTokenFactory("TODO");
 
         poolConfig[poolId] = PoolConfig({
             timeInterval: interval,
@@ -195,7 +195,7 @@ contract FidelityHook is BaseHook, FidelityTokenFactory {
         FidelityTokenFactory fidelityTokenFactory = FidelityTokenFactory(address(config.fidelityTokenFactory));
         fidelityTokenFactory.resetCampaign();
         config.currentCampaignId = fidelityTokenFactory.nextTokenId() - 1;
-        config.timeInterval = block.timestamp + config.timeInterval //TODO: Double check with the team
+        config.timeInterval = block.timestamp + config.timeInterval; //TODO: Double check with the team
     }
 
     function calculateSwapVolume(
@@ -226,6 +226,8 @@ contract FidelityHook is BaseHook, FidelityTokenFactory {
             ,
             FidelityHook.Bound memory volThreshold,
             FidelityHook.Bound memory feeLimits
+            ,
+            ,  
         ) = this.poolConfig(pool);
 
         if (fidelityTokens < volThreshold.lower) {
