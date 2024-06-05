@@ -13,10 +13,12 @@ import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
 import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {Deployers} from "v4-core/test/utils/Deployers.sol";
 import {FidelityHook} from "../src/FidelityHook.sol";
+import {FidelityTokenFactory} from "../src/FidelityHook.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 import {SwapFeeLibrary} from "v4-core/src/libraries/SwapFeeLibrary.sol";
+import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
 
-contract FidelityHookTest is Test, Deployers {
+contract FidelityHookTest is Test, Deployers, ERC1155Holder {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
 
@@ -73,8 +75,7 @@ contract FidelityHookTest is Test, Deployers {
         (
             uint256 interval,
             FidelityHook.Bound memory volThreshold,
-            FidelityHook.Bound memory feeLimits
-            ,
+            FidelityHook.Bound memory feeLimits,
             ,
         ) = fidelityHook.poolConfig(key.toId());
 
@@ -83,5 +84,50 @@ contract FidelityHookTest is Test, Deployers {
         assertEq(volThreshold.lower, 1 ether);
         assertEq(feeLimits.upper, 10000);
         assertEq(feeLimits.lower, 2000);
+    }
+
+    function test_FidelityTokenMinting() public {
+        (
+            uint256 timeInterval,
+            ,
+            ,
+            FidelityTokenFactory factory,
+        ) = fidelityHook.poolConfig(key.toId());
+       
+        swapRouter.swap(
+            key,
+            IPoolManager.SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether, // Exact input for output swap
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+            }),
+            PoolSwapTest.TestSettings({
+                withdrawTokens: true,
+                settleUsingTransfer: true,
+                currencyAlreadySent: false
+            }),
+            abi.encode(address(this))
+        );
+
+        assertEq(factory.balanceOf(address(this), 0), 0.001 ether);
+
+        skip(timeInterval);
+
+        swapRouter.swap(
+            key,
+            IPoolManager.SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.1 ether, // Exact input for output swap
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+            }),
+            PoolSwapTest.TestSettings({
+                withdrawTokens: true,
+                settleUsingTransfer: true,
+                currencyAlreadySent: false
+            }),
+            abi.encode(address(this))
+        );
+
+        assertEq(factory.balanceOf(address(this), 1), 0.1 ether);
     }
 }
