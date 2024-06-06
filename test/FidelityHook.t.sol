@@ -15,6 +15,7 @@ import {Deployers} from "v4-core/test/utils/Deployers.sol";
 import {FidelityHook} from "../src/FidelityHook.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 import {SwapFeeLibrary} from "v4-core/src/libraries/SwapFeeLibrary.sol";
+import {IERC20Minimal} from "v4-core/src/interfaces/external/IERC20Minimal.sol";
 
 contract FidelityHookTest is Test, Deployers {
     using PoolIdLibrary for PoolKey;
@@ -22,6 +23,7 @@ contract FidelityHookTest is Test, Deployers {
 
     FidelityHook fidelityHook;
     PoolId poolId;
+    address liqProvider = makeAddr("LP");
 
     function setUp() public {
         // Deploy v4-core
@@ -36,7 +38,8 @@ contract FidelityHookTest is Test, Deployers {
                 Hooks.BEFORE_SWAP_FLAG |
                 Hooks.AFTER_SWAP_FLAG |
                 Hooks.BEFORE_ADD_LIQUIDITY_FLAG |
-                Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
+                Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
+                Hooks.AFTER_ADD_LIQUIDITY_FLAG
         );
         (, bytes32 salt) = HookMiner.find(
             address(this),
@@ -57,16 +60,18 @@ contract FidelityHookTest is Test, Deployers {
             abi.encode(7 days, 2 ether, 1 ether, 10000, 2000)
         );
 
+        IERC20Minimal(Currency.unwrap(currency0)).transfer(liqProvider, 0.3 ether);
+        IERC20Minimal(Currency.unwrap(currency1)).transfer(liqProvider, 0.3 ether);
         // Add some liquidity
-        modifyLiquidityRouter.modifyLiquidity(
-            key,
-            IPoolManager.ModifyLiquidityParams({
-                tickLower: -60,
-                tickUpper: 60,
-                liquidityDelta: 100 ether
-            }),
-            ZERO_BYTES
-        );
+        
+        vm.startPrank(liqProvider);
+
+        IERC20Minimal(Currency.unwrap(currency0)).approve(address(fidelityHook), type(uint256).max);
+        IERC20Minimal(Currency.unwrap(currency1)).approve(address(fidelityHook), type(uint256).max);
+
+        
+
+
     }
 
     function test_PoolConfigInitialization() public {
@@ -81,5 +86,51 @@ contract FidelityHookTest is Test, Deployers {
         assertEq(volThreshold.lower, 1 ether);
         assertEq(feeLimits.upper, 10000);
         assertEq(feeLimits.lower, 2000);
+    }
+
+    function test_RemoveLiquidityWithFees() public {
+        vm.startPrank(liqProvider);
+
+        fidelityHook.addLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -60,
+                tickUpper: 60,
+                liquidityDelta: 100 ether
+            })
+        );
+
+        vm.stopPrank();
+
+        swapRouter.swap(
+            key,
+            IPoolManager.SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether, // Exact input for output swap
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+            }),
+            PoolSwapTest.TestSettings({
+                withdrawTokens: true,
+                settleUsingTransfer: true,
+                currencyAlreadySent: false
+            }),
+            abi.encode(address(this))
+        );
+
+        skip(7 days + 1);
+
+        vm.startPrank(liqProvider);
+
+        fidelityHook.removeLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -60,
+                tickUpper: 60,
+                liquidityDelta: -100 ether
+            }),
+            0
+        );
+
+        vm.stopPrank();
     }
 }

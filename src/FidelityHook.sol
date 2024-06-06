@@ -8,7 +8,9 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {SwapFeeLibrary} from "v4-core/src/libraries/SwapFeeLibrary.sol";
-//import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IUnlockCallback} from "v4-core/src/interfaces/callback/IUnlockCallback.sol";
+import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
+import {PoolTestBase} from "v4-core/src/test/PoolTestBase.sol";
 
 /* I Characteristics of individual pools:
  * 1. Upper/lower trade volume threshold for fee reduction.
@@ -35,9 +37,24 @@ import {SwapFeeLibrary} from "v4-core/src/libraries/SwapFeeLibrary.sol";
  *     decreases the efficacy of fee reduction a user reached with its volume beforehand? Or does
  *     a new LP/liquidty submit to the fee reduction percentage a user has already reached?
  */
-contract FidelityHook is BaseHook {
+contract FidelityHook is BaseHook, PoolTestBase  {
     using PoolIdLibrary for PoolKey;
     using SwapFeeLibrary for uint24;
+    using CurrencyLibrary for Currency;
+
+    error PoolNotInitialized();
+    error SenderMustBeHook();
+
+    bytes internal constant ZERO_BYTES = bytes("");
+
+    struct CallbackData {
+        address sender;
+        PoolKey key;
+        IPoolManager.ModifyLiquidityParams params;
+        bytes hookData;
+        bool settleUsingTransfer;
+        bool withdrawTokens;
+    }
 
     struct LastTradeInfo {
         uint256 token0;
@@ -62,10 +79,79 @@ contract FidelityHook is BaseHook {
     //address => campaign => poolId => amount
     mapping(address => mapping(uint256 => mapping(bytes32 => int256))) public liquidityAmountPerCampaign;
     mapping(uint256 => uint256) public campaignStartTime;
+    mapping(
+        address => mapping(
+        PoolId => mapping(
+        int24 => mapping(
+        int24 => mapping(
+        uint256 => int256
+    ))))) public userLiqInPoolPerTicksAndCampaign;
 
     error MustUseDynamicFee();
 
-    constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
+    constructor(IPoolManager _poolManager) BaseHook(_poolManager) PoolTestBase(_poolManager) {}
+
+    function addLiquidity(
+        PoolKey calldata key,
+        IPoolManager.ModifyLiquidityParams memory params
+    ) external {
+        PoolId poolId = key.toId();
+
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
+        if (sqrtPriceX96 == 0) revert PoolNotInitialized();
+
+        require(params.liquidityDelta > 0, "Can't add negative liqDelta");
+        uint256 currentCampaign = getCurrentCampaign(poolId);
+
+        userLiqInPoolPerTicksAndCampaign
+        [msg.sender]
+        [poolId]
+        [params.tickLower]
+        [params.tickUpper]
+        [currentCampaign] += params.liquidityDelta;
+
+        modifyLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: params.tickLower,
+                tickUpper: params.tickUpper,
+                liquidityDelta: params.liquidityDelta
+            }),
+            ZERO_BYTES
+        );
+    }
+
+    function removeLiquidity(
+        PoolKey calldata key,
+        IPoolManager.ModifyLiquidityParams memory params,
+        uint256 campaignId
+    ) external {
+        PoolId poolId = key.toId();
+
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
+        if (sqrtPriceX96 == 0) revert PoolNotInitialized();
+
+        require(params.liquidityDelta < 0, "Can't remove positive liqDelta");
+        uint256 currentCampaign = getCurrentCampaign(poolId);
+        require(currentCampaign > campaignId, "Liq still locked");
+
+        userLiqInPoolPerTicksAndCampaign
+        [msg.sender]
+        [poolId]
+        [params.tickLower]
+        [params.tickUpper]
+        [currentCampaign] += params.liquidityDelta;
+
+        modifyLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: params.tickLower,
+                tickUpper: params.tickUpper,
+                liquidityDelta: params.liquidityDelta
+            }),
+            ZERO_BYTES
+        );
+    }
 
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
@@ -159,14 +245,13 @@ contract FidelityHook is BaseHook {
         return BaseHook.afterSwap.selector;
     }
 
-    function beforeAddLiquidity(address, PoolKey calldata, IPoolManager.ModifyLiquidityParams calldata, bytes calldata)
+    function beforeAddLiquidity(address sender, PoolKey calldata, IPoolManager.ModifyLiquidityParams calldata, bytes calldata)
         external
         virtual
         override
         returns (bytes4)
     {
-        // Only allow new liquidity or recentering of existing ones.
-        onlyAllowRecentering();
+        if (sender != address(this)) revert SenderMustBeHook();
 
         return BaseHook.beforeAddLiquidity.selector;
     }
@@ -178,8 +263,8 @@ contract FidelityHook is BaseHook {
         BalanceDelta,
         bytes calldata
     ) external virtual override returns (bytes4) {
-        updateStateAfterAddLiquidity(liquidityParams, poolKey);
-        revert HookNotImplemented();
+        //updateStateAfterAddLiquidity(liquidityParams, poolKey);
+        return BaseHook.afterAddLiquidity.selector;
     }
 
     function beforeRemoveLiquidity(
@@ -190,7 +275,7 @@ contract FidelityHook is BaseHook {
     ) external virtual override returns (bytes4) {
         // Only allow LPs to withdraw liquidity if the campaign in which they locked passed.
 
-        removeLiquidityCheck(liquidityParams, poolKey);
+        //removeLiquidityCheck(liquidityParams, poolKey);
         return BaseHook.beforeRemoveLiquidity.selector;
     }
 
@@ -223,8 +308,8 @@ contract FidelityHook is BaseHook {
 
     }
 
-    function getCurrentCampaign() internal returns (uint256 campaignId){
-
+    function getCurrentCampaign(PoolId pool) internal view returns (uint256 campaignId){
+       
     }
 
     function checkNewCampaignAndResetVolume() internal {
@@ -237,7 +322,7 @@ contract FidelityHook is BaseHook {
 
 
     function removeLiquidityCheck(IPoolManager.ModifyLiquidityParams calldata liquidityParams, PoolKey calldata poolKey) internal returns (bool) {
-        uint256 campaignId = getCurrentCampaign();
+        uint256 campaignId = getCurrentCampaign(poolKey.toId());
         require(block.timestamp < campaignStartTime[campaignId] || block.timestamp > campaignStartTime[campaignId] + 30 days, "You cannot remove liquidity during campaign");
         int256 liquidityToRemove = liquidityParams.liquidityDelta;
         require(liquidityToRemove < 0, "Invalid liquidity amount for removal");
@@ -248,7 +333,7 @@ contract FidelityHook is BaseHook {
 
     function updateStateAfterAddLiquidity(IPoolManager.ModifyLiquidityParams calldata liquidityParams, PoolKey calldata poolKey) internal {
         bytes32 poolIdBytes32 = PoolId.unwrap(poolKey.toId());
-        liquidityAmountPerCampaign[msg.sender][getCurrentCampaign()][poolIdBytes32] += liquidityParams.liquidityDelta;
+        liquidityAmountPerCampaign[msg.sender][getCurrentCampaign(poolKey.toId())][poolIdBytes32] += liquidityParams.liquidityDelta;
     }
 
     function onlyAllowRecentering() internal returns(bool) {
@@ -257,5 +342,38 @@ contract FidelityHook is BaseHook {
 
     function burnLastCampaignTokens() internal {
 
+    }
+
+    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params,  bytes memory hookData)
+        internal
+        returns (BalanceDelta delta)
+    {
+        delta = abi.decode(poolManager.unlock(abi.encode(CallbackData(msg.sender, key, params, hookData, true, true))), (BalanceDelta));
+    }
+
+    function unlockCallback(bytes calldata rawData) external returns (bytes memory) {
+        require(msg.sender == address(manager));
+
+        CallbackData memory data = abi.decode(rawData, (CallbackData));
+
+        BalanceDelta delta = manager.modifyLiquidity(data.key, data.params, data.hookData);
+
+        (,, int256 delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
+        (,, int256 delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
+
+        if (data.params.liquidityDelta < 0) {
+            assert(delta0 > 0 || delta1 > 0);
+            assert(!(delta0 < 0 || delta1 < 0));
+        } else if (data.params.liquidityDelta > 0) {
+            assert(delta0 < 0 || delta1 < 0);
+            assert(!(delta0 > 0 || delta1 > 0));
+        }
+
+        if (delta0 < 0) _settle(data.key.currency0, data.sender, int128(delta0), data.settleUsingTransfer);
+        if (delta1 < 0) _settle(data.key.currency1, data.sender, int128(delta1), data.settleUsingTransfer);
+        if (delta0 > 0) _take(data.key.currency0, data.sender, int128(delta0), data.withdrawTokens);
+        if (delta1 > 0) _take(data.key.currency1, data.sender, int128(delta1), data.withdrawTokens);
+
+        return abi.encode(delta);
     }
 }
