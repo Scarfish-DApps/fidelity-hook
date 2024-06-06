@@ -56,7 +56,7 @@ contract FidelityHook is BaseHook {
         Bound volumeThreshold;
         Bound feeLimits;
         FidelityTokenFactory fidelityTokenFactory;
-        uint256 currentCampaignId;
+        uint256 initTimestamp;
     }
 
     mapping(PoolId => PoolConfig) public poolConfig;
@@ -115,30 +115,32 @@ contract FidelityHook is BaseHook {
             volumeThreshold: Bound({upper: volUpperThreshold, lower: volLowerThreshold}),
             feeLimits: Bound({upper: uint256(feeUpperLimit), lower: uint256(feeLowerLimit)}),
             fidelityTokenFactory: fidelityTokenFactory,
-            currentCampaignId: 0
+            initTimestamp: block.timestamp
         });
 
         return this.beforeInitialize.selector;
     }
 
     function beforeSwap(
-        address sender,
+        address,
         PoolKey calldata key,
         IPoolManager.SwapParams calldata,
-        bytes calldata
+        bytes calldata hookData
     ) external override poolManagerOnly returns (bytes4) {
+        address user = abi.decode(hookData, (address));
+
         PoolId poolId = key.toId();
         // Retrieve user's trading volume for current campaign provided by Brevis
-        uint256 volume = getUserVolume(sender, poolId);
+        uint256 volume = getUserVolume(user, poolId);
 
         // Update user's trading volume within current campaign with the new registered value
-        updateVolume(sender, poolId);
+        updateVolume(user, poolId);
 
         // Burn the fidelity tokens of last campaign if new one started
         burnLastCampaignTokens();
 
         // Retrieve user's amount of fidelity token
-        uint256 fidelityTokens = getUserFidelityTokens(sender, poolId);
+        uint256 fidelityTokens = getUserFidelityTokens(user, poolId);
 
         // Calculate how much fees to charge based on amount of fidelity token
         uint24 fee = calculateFee(fidelityTokens, poolId);
@@ -148,18 +150,19 @@ contract FidelityHook is BaseHook {
         return this.beforeSwap.selector;
     }
 
-    function afterSwap(address sender, PoolKey calldata key, IPoolManager.SwapParams calldata swapParams, BalanceDelta delta, bytes calldata)
+    function afterSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata swapParams, BalanceDelta delta, bytes calldata hookData)
         external
         override
         returns (bytes4)
     {
+        address user = abi.decode(hookData, (address));
         PoolId poolId = key.toId();
 
         // Retrieve user's recorded trading volume
         uint256 volume = calculateSwapVolume(swapParams, delta);
 
         // Mint fidelity tokens based on user's trading volume
-        updateFidelityTokens(sender, volume, poolId);
+        updateFidelityTokens(user, volume, poolId);
 
         return BaseHook.afterSwap.selector;
     }
@@ -188,16 +191,6 @@ contract FidelityHook is BaseHook {
         return BaseHook.beforeRemoveLiquidity.selector;
     }
 
-    function startNewCampaign(PoolId poolId) external { //TODO: Double check with the team
-        PoolConfig storage config = poolConfig[poolId];
-        require(block.timestamp >= config.timeInterval, "CampaignNotEnded");
-
-        FidelityTokenFactory fidelityTokenFactory = FidelityTokenFactory(address(config.fidelityTokenFactory));
-        fidelityTokenFactory.resetCampaign();
-        config.currentCampaignId = fidelityTokenFactory.nextTokenId() - 1;
-        config.timeInterval = block.timestamp + config.timeInterval; //TODO: Double check with the team
-    }
-
     function calculateSwapVolume(
         IPoolManager.SwapParams calldata swapParams,
         BalanceDelta delta
@@ -217,8 +210,9 @@ contract FidelityHook is BaseHook {
 
     function updateFidelityTokens(address user, uint256 volume, PoolId pool) internal {
         PoolConfig memory config = poolConfig[pool];
+        uint256 currentCampaign = getCurrentCampaign(pool);
         FidelityTokenFactory fidelityTokenFactory = config.fidelityTokenFactory;
-        fidelityTokenFactory.mint(user, config.currentCampaignId, volume);
+        fidelityTokenFactory.mint(user, currentCampaign, volume);
     }
 
     function calculateFee(uint256 fidelityTokens, PoolId pool) internal returns(uint24 fee){
@@ -247,12 +241,21 @@ contract FidelityHook is BaseHook {
 
     function getUserFidelityTokens(address user, PoolId pool) internal view returns (uint256 tokenAmount) {
         PoolConfig memory config = poolConfig[pool];
+        uint256 currentCampaign = getCurrentCampaign(pool);
         FidelityTokenFactory fidelityTokenFactory = config.fidelityTokenFactory;
-        tokenAmount = fidelityTokenFactory.balanceOf(user, config.currentCampaignId);
+        tokenAmount = fidelityTokenFactory.balanceOf(user, currentCampaign);
     }
 
-    function getCurrentCampaign() internal returns (uint256 campaignId){
+    function getCurrentCampaign(PoolId pool) internal view returns (uint256 campaignId){
+        (
+            uint256 timeInterval,
+            ,
+            ,
+            ,
+            uint256 initTimestmamp  
+        ) = this.poolConfig(pool);
 
+        campaignId = (block.timestamp - initTimestmamp) / timeInterval;
     }
 
     function checkNewCampaignAndResetVolume() internal {
