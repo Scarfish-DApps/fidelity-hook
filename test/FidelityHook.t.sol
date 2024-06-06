@@ -71,9 +71,16 @@ contract FidelityHookTest is Test, Deployers, ERC1155Holder {
         IERC20Minimal(Currency.unwrap(currency0)).approve(address(fidelityHook), type(uint256).max);
         IERC20Minimal(Currency.unwrap(currency1)).approve(address(fidelityHook), type(uint256).max);
 
-        
+        fidelityHook.addLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -60,
+                tickUpper: 60,
+                liquidityDelta: 100 ether
+            })
+        );
 
-
+        vm.stopPrank();
     }
 
     function test_PoolConfigInitialization() public {
@@ -92,18 +99,20 @@ contract FidelityHookTest is Test, Deployers, ERC1155Holder {
     }
 
     function test_RemoveLiquidityWithFees() public {
-        vm.startPrank(liqProvider);
-
-        fidelityHook.addLiquidity(
+        swapRouter.swap(
             key,
-            IPoolManager.ModifyLiquidityParams({
-                tickLower: -60,
-                tickUpper: 60,
-                liquidityDelta: 100 ether
-            })
+            IPoolManager.SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether, // Exact input for output swap
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+            }),
+            PoolSwapTest.TestSettings({
+                withdrawTokens: true,
+                settleUsingTransfer: true,
+                currencyAlreadySent: false
+            }),
+            abi.encode(address(this))
         );
-
-        vm.stopPrank();
 
         skip(7 days + 1);
 
@@ -120,6 +129,11 @@ contract FidelityHookTest is Test, Deployers, ERC1155Holder {
         );
 
         vm.stopPrank();
+
+        uint128 liquidity = manager.getLiquidity(key.toId());
+
+        assertEq(liquidity, 0);
+    }
 
     function test_FidelityTokenMinting() public {
         (
