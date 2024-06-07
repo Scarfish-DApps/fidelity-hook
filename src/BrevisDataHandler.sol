@@ -29,6 +29,15 @@ contract BrevisDataHandler is BrevisApp, Ownable {
 
     constructor(address brevisProof) BrevisApp(IBrevisProof(brevisProof)) Ownable(msg.sender) {}
 
+    struct Discount {
+        uint256 requiredVolume;
+        uint16 discountRate; // In basis points (1% = 100 basis points)
+    }
+
+    mapping(bytes32 => mapping(address => Discount[])) public discounts; // PoolId => (Currency => Discounts)
+    mapping(address => mapping(bytes32 => uint16)) public userDiscounts; // User => (PoolId => HighestDiscount)
+    bytes32[] public poolIds; // List of all pool IDs
+
     function handleProofResult(
         bytes32 /*_requestId*/,
         bytes32 _vkHash,
@@ -65,7 +74,7 @@ contract BrevisDataHandler is BrevisApp, Ownable {
     }
 
     function bytesToUint256(bytes memory b) internal pure returns (uint256) {
-        require(b.length == 248, "Invalid bytes length for conversion");
+        require(b.length == 32, "Invalid bytes length for conversion");
 
         uint256 number;
         for (uint i = 0; i < 32; i++) {
@@ -78,15 +87,7 @@ contract BrevisDataHandler is BrevisApp, Ownable {
         vkHash = _vkHash;
     }
 
-    struct Discount {
-        uint256 requiredVolume;
-        uint256 discountRate; // In basis points (1% = 100 basis points)
-    }
-
-    mapping(bytes32 => mapping(address => Discount[])) public discounts; // PoolId => (Currency => Discounts)
-    mapping(address => mapping(bytes32 => uint256)) public userDiscounts; // User => (PoolId => HighestDiscount)
-
-    function setDiscounts(bytes32 poolId, address[] calldata currencies, uint256[] calldata volumes, uint8[] calldata discountsBps) external onlyOwner {
+    function setDiscounts(bytes32 poolId, address[] calldata currencies, uint256[] calldata volumes, uint16[] calldata discountsBps) external onlyOwner {
         require(currencies.length == volumes.length, "Input arrays must have the same length");
         require(currencies.length == discountsBps.length, "Input arrays must have the same length");
 
@@ -96,6 +97,18 @@ contract BrevisDataHandler is BrevisApp, Ownable {
                 requiredVolume: volumes[i],
                 discountRate: discountsBps[i]
             }));
+        }
+
+        // Ensure the poolId is in the poolIds array
+        bool poolIdExists = false;
+        for (uint256 i = 0; i < poolIds.length; i++) {
+            if (poolIds[i] == poolId) {
+                poolIdExists = true;
+                break;
+            }
+        }
+        if (!poolIdExists) {
+            poolIds.push(poolId);
         }
     }
 
@@ -111,5 +124,57 @@ contract BrevisDataHandler is BrevisApp, Ownable {
 
     function getUserDiscount(address user, bytes32 poolId) external view returns (uint256) {
         return userDiscounts[user][poolId];
+    }
+
+    function getEligibleDiscounts(address[] memory users, address[] memory currencies, uint256[] memory volumes)
+        public
+        view
+        returns (address[] memory, bytes32[] memory, uint16[] memory)
+    {
+        require(users.length == currencies.length, "Input arrays must have the same length");
+        require(users.length == volumes.length, "Input arrays must have the same length");
+
+        uint256 count = 0;
+
+        // First pass: calculate the number of eligible discounts to determine array sizes
+        for (uint256 i = 0; i < users.length; i++) {
+            for (uint256 j = 0; j < poolIds.length; j++) {
+                uint16 discountRate = getHighestDiscount(poolIds[j], currencies[i], volumes[i]);
+                if (discountRate > 0) {
+                    count++;
+                }
+            }
+        }
+
+        address[] memory eligibleUsers = new address[](count);
+        bytes32[] memory eligiblePoolIds = new bytes32[](count);
+        uint16[] memory eligibleDiscountRates = new uint16[](count);
+
+        uint256 index = 0;
+
+        // Second pass: populate the arrays with eligible discounts
+        for (uint256 i = 0; i < users.length; i++) {
+            for (uint256 j = 0; j < poolIds.length; j++) {
+                uint16 discountRate = getHighestDiscount(poolIds[j], currencies[i], volumes[i]);
+                if (discountRate > 0) {
+                    eligibleUsers[index] = users[i];
+                    eligiblePoolIds[index] = poolIds[j];
+                    eligibleDiscountRates[index] = discountRate;
+                    index++;
+                }
+            }
+        }
+
+        return (eligibleUsers, eligiblePoolIds, eligibleDiscountRates);
+    }
+
+    function getHighestDiscount(bytes32 poolId, address currency, uint256 volume) internal view returns (uint16) {
+        uint16 highestDiscount = 0;
+        for (uint256 i = 0; i < discounts[poolId][currency].length; i++) {
+            if (volume >= discounts[poolId][currency][i].requiredVolume && discounts[poolId][currency][i].discountRate > highestDiscount) {
+                highestDiscount = discounts[poolId][currency][i].discountRate;
+            }
+        }
+        return highestDiscount;
     }
 }
