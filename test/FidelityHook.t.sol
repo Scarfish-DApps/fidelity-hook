@@ -180,4 +180,62 @@ contract FidelityHookTest is Test, Deployers, ERC1155Holder {
 
         assertEq(factory.balanceOf(address(this), 1), 0.1 ether);
     }
+
+    function test_RecenterPosition() public {
+        int24 tick;
+         (, tick,,) = manager.getSlot0(key.toId());
+
+        swapRouter.swap(
+            key,
+            IPoolManager.SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.1 ether, // Exact input for output swap
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+            }),
+            PoolSwapTest.TestSettings({
+                withdrawTokens: true,
+                settleUsingTransfer: true,
+                currencyAlreadySent: false
+            }),
+            abi.encode(address(this))
+        );
+
+        (, tick,,) = manager.getSlot0(key.toId());
+
+        vm.startPrank(liqProvider);
+
+        fidelityHook.recenterPosition(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -60,
+                tickUpper: 60,
+                liquidityDelta: -100 ether
+            }),
+            0,
+            -120,
+            120
+        );
+
+        vm.stopPrank();
+
+        skip(7 days + 1);
+
+        vm.startPrank(liqProvider);
+
+        fidelityHook.removeLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: 0,
+                tickUpper: 120,
+                liquidityDelta: -100 ether
+            }),
+            0
+        );
+
+        vm.stopPrank();
+
+        uint128 liquidity = manager.getLiquidity(key.toId());
+
+        assertEq(liquidity, 0);
+    }
 }

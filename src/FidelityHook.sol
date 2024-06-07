@@ -12,6 +12,7 @@ import {IUnlockCallback} from "v4-core/src/interfaces/callback/IUnlockCallback.s
 import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
 import {PoolTestBase} from "v4-core/src/test/PoolTestBase.sol";
 import {FidelityTokenFactory} from "./FidelityTokenFactory.sol";
+import {IERC20Minimal} from "v4-core/src/interfaces/external/IERC20Minimal.sol";
 
 /* I Characteristics of individual pools:
  * 1. Upper/lower trade volume threshold for fee reduction.
@@ -157,6 +158,38 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         );
     }
 
+    function recenterPosition(
+        PoolKey calldata key,
+        IPoolManager.ModifyLiquidityParams memory params,
+        uint256 campaignId,
+        int24 newLowerTick,
+        int24 newUpperTick
+    ) external {
+        PoolId poolId = key.toId();
+
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
+        if (sqrtPriceX96 == 0) revert PoolNotInitialized();
+
+        int256 liqToRecenter = userLiqInPoolPerTicksAndCampaign
+        [msg.sender]
+        [poolId]
+        [params.tickLower]
+        [params.tickUpper]
+        [campaignId];
+
+        require(liqToRecenter > 0, "No liq. available");
+
+        modifyLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: params.tickLower,
+                tickUpper: params.tickUpper,
+                liquidityDelta: params.liquidityDelta
+            }),
+            abi.encode(newLowerTick, newUpperTick)
+        );
+    }
+
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: true,
@@ -207,6 +240,9 @@ contract FidelityHook is BaseHook, PoolTestBase  {
             fidelityTokenFactory: fidelityTokenFactory,
             initTimestamp: block.timestamp
         });
+
+        IERC20Minimal(Currency.unwrap(key.currency0)).approve(address(manager), type(uint256).max);
+        IERC20Minimal(Currency.unwrap(key.currency1)).approve(address(manager), type(uint256).max);
 
         return this.beforeInitialize.selector;
     }
@@ -401,23 +437,54 @@ contract FidelityHook is BaseHook, PoolTestBase  {
 
         CallbackData memory data = abi.decode(rawData, (CallbackData));
 
-        BalanceDelta delta = manager.modifyLiquidity(data.key, data.params, data.hookData);
+         BalanceDelta delta;
+        if(keccak256(data.hookData) != keccak256(ZERO_BYTES)) {
+            delta = manager.modifyLiquidity(data.key, data.params, data.hookData);
 
-        (,, int256 delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
-        (,, int256 delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
+            int256 delta0;
+            int256 delta1;
 
-        if (data.params.liquidityDelta < 0) {
-            assert(delta0 > 0 || delta1 > 0);
-            assert(!(delta0 < 0 || delta1 < 0));
-        } else if (data.params.liquidityDelta > 0) {
-            assert(delta0 < 0 || delta1 < 0);
-            assert(!(delta0 > 0 || delta1 > 0));
+            (,, delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
+            (,, delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
+
+            if (delta0 > 0) _take(data.key.currency0, address(this), int128(delta0), data.withdrawTokens);
+            if (delta1 > 0) _take(data.key.currency1, address(this), int128(delta1), data.withdrawTokens);
+
+            (int24 newLowerTick, int24 newUpperTick) = abi.decode(data.hookData, (int24, int24));
+            delta = manager.modifyLiquidity(
+                data.key,
+                IPoolManager.ModifyLiquidityParams({
+                    tickLower: newLowerTick,
+                    tickUpper: newUpperTick,
+                    liquidityDelta: -data.params.liquidityDelta
+                }),
+                data.hookData
+            );
+
+            (,, delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
+            (,, delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
+
+            if (delta0 < 0) _settle(data.key.currency0, address(this), int128(delta0), data.settleUsingTransfer);
+            if (delta1 < 0) _settle(data.key.currency1,address(this), int128(delta1), data.settleUsingTransfer);
+        } else {
+            delta = manager.modifyLiquidity(data.key, data.params, data.hookData);
+
+            (,, int256 delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
+            (,, int256 delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
+
+            if (data.params.liquidityDelta < 0) {
+                assert(delta0 > 0 || delta1 > 0);
+                assert(!(delta0 < 0 || delta1 < 0));
+            } else if (data.params.liquidityDelta > 0) {
+                assert(delta0 < 0 || delta1 < 0);
+                assert(!(delta0 > 0 || delta1 > 0));
+            }
+
+            if (delta0 < 0) _settle(data.key.currency0, data.sender, int128(delta0), data.settleUsingTransfer);
+            if (delta1 < 0) _settle(data.key.currency1, data.sender, int128(delta1), data.settleUsingTransfer);
+            if (delta0 > 0) _take(data.key.currency0, data.sender, int128(delta0), data.withdrawTokens);
+            if (delta1 > 0) _take(data.key.currency1, data.sender, int128(delta1), data.withdrawTokens);
         }
-
-        if (delta0 < 0) _settle(data.key.currency0, data.sender, int128(delta0), data.settleUsingTransfer);
-        if (delta1 < 0) _settle(data.key.currency1, data.sender, int128(delta1), data.settleUsingTransfer);
-        if (delta0 > 0) _take(data.key.currency0, data.sender, int128(delta0), data.withdrawTokens);
-        if (delta1 > 0) _take(data.key.currency1, data.sender, int128(delta1), data.withdrawTokens);
 
         return abi.encode(delta);
     }
