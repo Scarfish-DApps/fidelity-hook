@@ -16,7 +16,7 @@ import "brevis/sdk/interface/IBrevisProof.sol";
 // Swap (index_topic_1 address sender, index_topic_2 address recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)
 //
 // Brevis output:
-// address userAddr, address currency, uint256 volume
+// address[] users, address[] currencies, uint256[] volumes
 // 
 // The contract looks up the discount corresponding to the currency (and validates the volume). 
 //
@@ -76,5 +76,36 @@ contract BrevisDataHandler is BrevisApp, Ownable {
 
     function setVkHash(bytes32 _vkHash) external onlyOwner {
         vkHash = _vkHash;
+    }
+
+    struct Discount {
+        uint256 requiredVolume;
+        uint256 discountRate; // In basis points (1% = 100 basis points)
+    }
+
+    mapping(address => Discount[]) public discounts;
+    mapping(address => uint256) public userDiscounts; // Stores the highest discount for each user
+
+    function setDiscounts(address[] calldata currencies, uint256[] calldata volumes, uint8[] calldata discountsBps) external onlyOwner {
+        require(currencies.length == volumes.length, "Input arrays must have the same length");
+        require(currencies.length == discountsBps.length, "Input arrays must have the same length");
+
+        for (uint256 i = 0; i < currencies.length; i++) {
+            require(discountsBps[i] <= 10000, "Invalid discount rate"); // Max 100%
+            discounts[currencies[i]].push(Discount({
+                requiredVolume: volumes[i],
+                discountRate: discountsBps[i]
+            }));
+        }
+    }
+
+   function getDiscount(address user, address currency, uint256 volume) external view returns (uint256) {
+        uint256 highestDiscount = 0;
+        for (uint256 i = 0; i < discounts[currency].length; i++) {
+            if (volume >= discounts[currency][i].requiredVolume && discounts[currency][i].discountRate > highestDiscount) {
+                highestDiscount = discounts[currency][i].discountRate;
+            }
+        }
+        return highestDiscount;
     }
 }
