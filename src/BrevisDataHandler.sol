@@ -5,6 +5,7 @@ import "openzeppelin-contracts/access/Ownable.sol";
 
 import "brevis/sdk/apps/framework/BrevisApp.sol";
 import "brevis/sdk/interface/IBrevisProof.sol";
+import "./FidelityHook.sol";
 
 // Traders earn OG status if they have generated a certain amount of volume (defined by the pool initializer) in a certain amount of time before the calculation. 
 // They benefit from a discount on the trading fees until the next calculation.
@@ -20,12 +21,14 @@ import "brevis/sdk/interface/IBrevisProof.sol";
 // 
 // The contract looks up the discount corresponding to the currency (and validates the volume). 
 //
-// Updates discounts on the hook contract.
+// Updates the hook contract with the discounts applied to each pool and each user.
 contract BrevisDataHandler is BrevisApp, Ownable {
 
     // event VolumeDataPushed(address indexed userAddr, address indexed currency, uint256 volume);
 
     bytes32 public vkHash;
+
+    FidelityHook public hook;
 
     constructor(address brevisProof) BrevisApp(IBrevisProof(brevisProof)) Ownable(msg.sender) {}
 
@@ -35,7 +38,7 @@ contract BrevisDataHandler is BrevisApp, Ownable {
     }
 
     mapping(bytes32 => mapping(address => Discount[])) public discounts; // PoolId => (Currency => Discounts)
-    mapping(address => mapping(bytes32 => uint16)) public userDiscounts; // User => (PoolId => HighestDiscount)
+
     bytes32[] public poolIds; // List of all pool IDs
 
     function handleProofResult(
@@ -48,6 +51,9 @@ contract BrevisDataHandler is BrevisApp, Ownable {
         (address[] memory users, address[] memory currencies, uint256[] memory volumes) = decodeOutput(_circuitOutput);
 
         /// TODO Call the main Hook contract here ...
+        (address[] memory eligibleUsers, bytes32[] memory poolIds, uint16[] memory disounts) = getEligibleDiscounts(users, currencies, volumes);
+
+        hook.setOgDiscounts(eligibleUsers, poolIds, disounts);
 
         // emit VolumeDataPushed(userAddr, currency, volume);
     }
@@ -120,10 +126,6 @@ contract BrevisDataHandler is BrevisApp, Ownable {
             }
         }
         return highestDiscount;
-    }
-
-    function getUserDiscount(address user, bytes32 poolId) external view returns (uint256) {
-        return userDiscounts[user][poolId];
     }
 
     function getEligibleDiscounts(address[] memory users, address[] memory currencies, uint256[] memory volumes)

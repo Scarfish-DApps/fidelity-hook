@@ -273,4 +273,19 @@ contract FidelityHook is BaseHook {
     function burnLastCampaignTokens() internal {
 
     }
+
+    mapping(address => mapping(bytes32 => uint16)) public userDiscounts; // User => (PoolId => HighestDiscount)
+
+    function setOgDiscounts(address[] memory eligibleUsers, bytes32[] memory poolIds, uint16[] memory disounts) external {
+        require(eligibleUsers.length == poolIds.length, "Input arrays must have the same length");
+        require(eligibleUsers.length == disounts.length, "Input arrays must have the same length");
+
+        for (uint256 i = 0; i < eligibleUsers.length; i++) {
+            userDiscounts[eligibleUsers[i]][poolIds[i]] = disounts[i];
+        }
+    } 
+
+    function getUserDiscount(address user, bytes32 poolId) external view returns (uint256) {
+        return userDiscounts[user][poolId];
+    }
 }
