@@ -16,7 +16,7 @@ import {FidelityHook} from "../src/FidelityHook.sol";
 import {FidelityTokenFactory} from "../src/FidelityHook.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 import {SwapFeeLibrary} from "v4-core/src/libraries/SwapFeeLibrary.sol";
-import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
+import {ERC1155Holder} from "openzeppelin-contracts/token/ERC1155/utils/ERC1155Holder.sol";
 
 contract FidelityHookTest is Test, Deployers, ERC1155Holder {
     using PoolIdLibrary for PoolKey;
