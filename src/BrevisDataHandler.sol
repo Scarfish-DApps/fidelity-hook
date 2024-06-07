@@ -83,29 +83,33 @@ contract BrevisDataHandler is BrevisApp, Ownable {
         uint256 discountRate; // In basis points (1% = 100 basis points)
     }
 
-    mapping(address => Discount[]) public discounts;
-    mapping(address => uint256) public userDiscounts; // Stores the highest discount for each user
+    mapping(bytes32 => mapping(address => Discount[])) public discounts; // PoolId => (Currency => Discounts)
+    mapping(address => mapping(bytes32 => uint256)) public userDiscounts; // User => (PoolId => HighestDiscount)
 
-    function setDiscounts(address[] calldata currencies, uint256[] calldata volumes, uint8[] calldata discountsBps) external onlyOwner {
+    function setDiscounts(bytes32 poolId, address[] calldata currencies, uint256[] calldata volumes, uint8[] calldata discountsBps) external onlyOwner {
         require(currencies.length == volumes.length, "Input arrays must have the same length");
         require(currencies.length == discountsBps.length, "Input arrays must have the same length");
 
         for (uint256 i = 0; i < currencies.length; i++) {
             require(discountsBps[i] <= 10000, "Invalid discount rate"); // Max 100%
-            discounts[currencies[i]].push(Discount({
+            discounts[poolId][currencies[i]].push(Discount({
                 requiredVolume: volumes[i],
                 discountRate: discountsBps[i]
             }));
         }
     }
 
-   function getDiscount(address user, address currency, uint256 volume) external view returns (uint256) {
+    function getDiscount(address user, bytes32 poolId, address currency, uint256 volume) external view returns (uint256) {
         uint256 highestDiscount = 0;
-        for (uint256 i = 0; i < discounts[currency].length; i++) {
-            if (volume >= discounts[currency][i].requiredVolume && discounts[currency][i].discountRate > highestDiscount) {
-                highestDiscount = discounts[currency][i].discountRate;
+        for (uint256 i = 0; i < discounts[poolId][currency].length; i++) {
+            if (volume >= discounts[poolId][currency][i].requiredVolume && discounts[poolId][currency][i].discountRate > highestDiscount) {
+                highestDiscount = discounts[poolId][currency][i].discountRate;
             }
         }
         return highestDiscount;
+    }
+
+    function getUserDiscount(address user, bytes32 poolId) external view returns (uint256) {
+        return userDiscounts[user][poolId];
     }
 }
