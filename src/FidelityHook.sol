@@ -140,12 +140,21 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         uint256 currentCampaign = getCurrentCampaign(poolId);
         require(currentCampaign > campaignId, "Liq still locked");
 
+        int256 liqAvailable = userLiqInPoolPerTicksAndCampaign
+        [msg.sender]
+        [poolId]
+        [params.tickLower]
+        [params.tickUpper]
+        [campaignId];
+
+        require(liqAvailable >= params.liquidityDelta, "Not enough liquidity");
+
         userLiqInPoolPerTicksAndCampaign
         [msg.sender]
         [poolId]
         [params.tickLower]
         [params.tickUpper]
-        [currentCampaign] += params.liquidityDelta;
+        [currentCampaign] -= params.liquidityDelta;
 
         modifyLiquidity(
             key,
@@ -165,6 +174,8 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         int24 newLowerTick,
         int24 newUpperTick
     ) external {
+        require(params.liquidityDelta < 0, "Recentering liqDelta not negative");
+
         PoolId poolId = key.toId();
 
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
@@ -178,6 +189,21 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         [campaignId];
 
         require(liqToRecenter > 0, "No liq. available");
+        require(liqToRecenter >= params.liquidityDelta, "Not enough liquidity");
+
+        userLiqInPoolPerTicksAndCampaign
+        [msg.sender]
+        [poolId]
+        [params.tickLower]
+        [params.tickUpper]
+        [campaignId] -= params.liquidityDelta;
+
+        userLiqInPoolPerTicksAndCampaign
+        [msg.sender]
+        [poolId]
+        [newLowerTick]
+        [newUpperTick]
+        [campaignId] += params.liquidityDelta;
 
         modifyLiquidity(
             key,
@@ -321,6 +347,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         bytes calldata
     ) external virtual override returns (bytes4) {
         // Only allow LPs to withdraw liquidity if the campaign in which they locked passed.
+        if (sender != address(this)) revert SenderMustBeHook();
 
         //removeLiquidityCheck(liquidityParams, poolKey);
         return BaseHook.beforeRemoveLiquidity.selector;
@@ -437,18 +464,18 @@ contract FidelityHook is BaseHook, PoolTestBase  {
 
         CallbackData memory data = abi.decode(rawData, (CallbackData));
 
-         BalanceDelta delta;
-        if(keccak256(data.hookData) != keccak256(ZERO_BYTES)) {
-            delta = manager.modifyLiquidity(data.key, data.params, data.hookData);
+        BalanceDelta delta;
+        int256 delta0;
+        int256 delta1;
 
-            int256 delta0;
-            int256 delta1;
+        delta = manager.modifyLiquidity(data.key, data.params, data.hookData);
 
-            (,, delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
-            (,, delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
+        (,, delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
+        (,, delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
 
-            if (delta0 > 0) _take(data.key.currency0, address(this), int128(delta0), data.withdrawTokens);
-            if (delta1 > 0) _take(data.key.currency1, address(this), int128(delta1), data.withdrawTokens);
+        if(keccak256(data.hookData) != keccak256(ZERO_BYTES)){
+            if (delta0 > 0) _take(data.key.currency0, data.sender, int128(delta0), data.withdrawTokens);
+            if (delta1 > 0) _take(data.key.currency1, data.sender, int128(delta1), data.withdrawTokens);
 
             (int24 newLowerTick, int24 newUpperTick) = abi.decode(data.hookData, (int24, int24));
             delta = manager.modifyLiquidity(
@@ -463,28 +490,12 @@ contract FidelityHook is BaseHook, PoolTestBase  {
 
             (,, delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
             (,, delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
-
-            if (delta0 < 0) _settle(data.key.currency0, address(this), int128(delta0), data.settleUsingTransfer);
-            if (delta1 < 0) _settle(data.key.currency1,address(this), int128(delta1), data.settleUsingTransfer);
-        } else {
-            delta = manager.modifyLiquidity(data.key, data.params, data.hookData);
-
-            (,, int256 delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
-            (,, int256 delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
-
-            if (data.params.liquidityDelta < 0) {
-                assert(delta0 > 0 || delta1 > 0);
-                assert(!(delta0 < 0 || delta1 < 0));
-            } else if (data.params.liquidityDelta > 0) {
-                assert(delta0 < 0 || delta1 < 0);
-                assert(!(delta0 > 0 || delta1 > 0));
-            }
-
-            if (delta0 < 0) _settle(data.key.currency0, data.sender, int128(delta0), data.settleUsingTransfer);
-            if (delta1 < 0) _settle(data.key.currency1, data.sender, int128(delta1), data.settleUsingTransfer);
-            if (delta0 > 0) _take(data.key.currency0, data.sender, int128(delta0), data.withdrawTokens);
-            if (delta1 > 0) _take(data.key.currency1, data.sender, int128(delta1), data.withdrawTokens);
         }
+
+        if (delta0 < 0) _settle(data.key.currency0, data.sender, int128(delta0), data.settleUsingTransfer);
+        if (delta1 < 0) _settle(data.key.currency1, data.sender, int128(delta1), data.settleUsingTransfer);
+        if (delta0 > 0) _take(data.key.currency0, data.sender, int128(delta0), data.withdrawTokens);
+        if (delta1 > 0) _take(data.key.currency1, data.sender, int128(delta1), data.withdrawTokens);
 
         return abi.encode(delta);
     }

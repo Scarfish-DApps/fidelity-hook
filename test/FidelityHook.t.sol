@@ -62,7 +62,7 @@ contract FidelityHookTest is Test, Deployers, ERC1155Holder {
             abi.encode(7 days, 2 ether, 1 ether, 10000, 2000)
         );
 
-        IERC20Minimal(Currency.unwrap(currency0)).transfer(liqProvider, 0.3 ether);
+        IERC20Minimal(Currency.unwrap(currency0)).transfer(liqProvider, 0.6 ether);
         IERC20Minimal(Currency.unwrap(currency1)).transfer(liqProvider, 0.3 ether);
         // Add some liquidity
         
@@ -70,6 +70,9 @@ contract FidelityHookTest is Test, Deployers, ERC1155Holder {
 
         IERC20Minimal(Currency.unwrap(currency0)).approve(address(fidelityHook), type(uint256).max);
         IERC20Minimal(Currency.unwrap(currency1)).approve(address(fidelityHook), type(uint256).max);
+
+        IERC20Minimal(Currency.unwrap(currency0)).approve(address(manager), type(uint256).max);
+        IERC20Minimal(Currency.unwrap(currency1)).approve(address(manager), type(uint256).max);
 
         fidelityHook.addLiquidity(
             key,
@@ -212,7 +215,7 @@ contract FidelityHookTest is Test, Deployers, ERC1155Holder {
                 liquidityDelta: -100 ether
             }),
             0,
-            -120,
+            0,
             120
         );
 
