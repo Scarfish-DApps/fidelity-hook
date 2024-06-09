@@ -41,6 +41,10 @@ contract BrevisDataHandler is BrevisApp, Ownable {
 
     bytes32[] public poolIds; // List of all pool IDs
 
+    function setHook(FidelityHook _hook) external onlyOwner {
+        hook = _hook;
+    }
+
     function handleProofResult(
         bytes32 /*_requestId*/,
         bytes32 _vkHash,
