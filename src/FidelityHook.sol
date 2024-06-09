@@ -58,13 +58,6 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         bool withdrawTokens;
     }
 
-    struct LastTradeInfo {
-        uint256 token0;
-        uint256 token1;
-        uint256 executionTimestamp;
-        uint256 totalVolume;
-    }
-
     struct Bound {
         uint256 upper;
         uint256 lower;
@@ -79,10 +72,6 @@ contract FidelityHook is BaseHook, PoolTestBase  {
     }
 
     mapping(PoolId => PoolConfig) public poolConfig;
-    mapping(address => LastTradeInfo) public lastRegisteredBalances;
-    //address => campaign => poolId => amount
-    mapping(address => mapping(uint256 => mapping(bytes32 => int256))) public liquidityAmountPerCampaign;
-    mapping(uint256 => uint256) public campaignStartTime;
     mapping(
         address => mapping(
         PoolId => mapping(
@@ -92,7 +81,6 @@ contract FidelityHook is BaseHook, PoolTestBase  {
     ))))) public userLiqInPoolPerTicksAndCampaign;
 
     error MustUseDynamicFee();
-    error CampaignNotEnded(); //TODO: use the custom error
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) PoolTestBase(_poolManager) {}
 
@@ -147,14 +135,15 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         [params.tickUpper]
         [campaignId];
 
-        require(liqAvailable >= params.liquidityDelta, "Not enough liquidity");
+        require(liqAvailable > 0, "No liq. available");
+        require(liqAvailable >= -params.liquidityDelta, "Not enough liquidity");
 
         userLiqInPoolPerTicksAndCampaign
         [msg.sender]
         [poolId]
         [params.tickLower]
         [params.tickUpper]
-        [currentCampaign] -= params.liquidityDelta;
+        [currentCampaign] -= -params.liquidityDelta;
 
         modifyLiquidity(
             key,
@@ -175,6 +164,12 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         int24 newUpperTick
     ) external {
         require(params.liquidityDelta < 0, "Recentering liqDelta not negative");
+        require(newLowerTick < newUpperTick, "TickLow > TickUppper");
+        require(
+            newUpperTick - newLowerTick >=
+            params.tickUpper - params.tickLower,
+            "New tick interval can't be lower"
+        );
 
         PoolId poolId = key.toId();
 
@@ -189,21 +184,21 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         [campaignId];
 
         require(liqToRecenter > 0, "No liq. available");
-        require(liqToRecenter >= params.liquidityDelta, "Not enough liquidity");
+        require(liqToRecenter >= -params.liquidityDelta, "Not enough liquidity");
 
         userLiqInPoolPerTicksAndCampaign
         [msg.sender]
         [poolId]
         [params.tickLower]
         [params.tickUpper]
-        [campaignId] -= params.liquidityDelta;
+        [campaignId] -= -params.liquidityDelta;
 
         userLiqInPoolPerTicksAndCampaign
         [msg.sender]
         [poolId]
         [newLowerTick]
         [newUpperTick]
-        [campaignId] += params.liquidityDelta;
+        [campaignId] += -params.liquidityDelta;
 
         modifyLiquidity(
             key,
@@ -221,7 +216,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
             beforeInitialize: true,
             afterInitialize: false,
             beforeAddLiquidity: true,
-            afterAddLiquidity: true,
+            afterAddLiquidity: false,
             beforeRemoveLiquidity: true,
             afterRemoveLiquidity: false,
             beforeSwap: true,
@@ -267,11 +262,9 @@ contract FidelityHook is BaseHook, PoolTestBase  {
             initTimestamp: block.timestamp
         });
 
-        IERC20Minimal(Currency.unwrap(key.currency0)).approve(address(manager), type(uint256).max);
-        IERC20Minimal(Currency.unwrap(key.currency1)).approve(address(manager), type(uint256).max);
-
         return this.beforeInitialize.selector;
     }
+
     function beforeSwap(
         address,
         PoolKey calldata key,
@@ -281,15 +274,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         address user = abi.decode(hookData, (address));
 
         PoolId poolId = key.toId();
-        // Retrieve user's trading volume for current campaign provided by Brevis
-        uint256 volume = getUserVolume(user, poolId);
-
-        // Update user's trading volume within current campaign with the new registered value
-        updateVolume(user, poolId);
-
-        // Burn the fidelity tokens of last campaign if new one started
-        burnLastCampaignTokens();
-
+  
         // Retrieve user's amount of fidelity token
         uint256 fidelityTokens = getUserFidelityTokens(user, poolId);
 
@@ -329,27 +314,14 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         return BaseHook.beforeAddLiquidity.selector;
     }
 
-    function afterAddLiquidity(
-        address,
-        PoolKey calldata poolKey,
-        IPoolManager.ModifyLiquidityParams calldata liquidityParams,
-        BalanceDelta,
-        bytes calldata
-    ) external virtual override returns (bytes4) {
-        //updateStateAfterAddLiquidity(liquidityParams, poolKey);
-        return BaseHook.afterAddLiquidity.selector;
-    }
-
     function beforeRemoveLiquidity(
-        address,
+        address sender,
         PoolKey calldata poolKey,
         IPoolManager.ModifyLiquidityParams calldata liquidityParams,
         bytes calldata
     ) external virtual override returns (bytes4) {
-        // Only allow LPs to withdraw liquidity if the campaign in which they locked passed.
         if (sender != address(this)) revert SenderMustBeHook();
 
-        //removeLiquidityCheck(liquidityParams, poolKey);
         return BaseHook.beforeRemoveLiquidity.selector;
     }
 
@@ -360,14 +332,6 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         volume = swapParams.zeroForOne
             ? uint256(int256(-delta.amount0()))
             : uint256(int256(delta.amount0()));
-    }
-
-    function getUserVolume(address user, PoolId pool) internal returns(uint256 volume){
-
-    }
-
-    function updateVolume(address user, PoolId pool) internal {
-        checkNewCampaignAndResetVolume();
     }
 
     function updateFidelityTokens(address user, uint256 volume, PoolId pool) internal {
@@ -418,38 +382,6 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         ) = this.poolConfig(pool);
 
         campaignId = (block.timestamp - initTimestmamp) / timeInterval;
-    }
-
-    function checkNewCampaignAndResetVolume() internal {
-
-    }
-
-    function checkIfCampaignPassed() internal returns(bool) {
-    
-    }
-
-
-    function removeLiquidityCheck(IPoolManager.ModifyLiquidityParams calldata liquidityParams, PoolKey calldata poolKey) internal returns (bool) {
-        uint256 campaignId = getCurrentCampaign(poolKey.toId());
-        require(block.timestamp < campaignStartTime[campaignId] || block.timestamp > campaignStartTime[campaignId] + 30 days, "You cannot remove liquidity during campaign");
-        int256 liquidityToRemove = liquidityParams.liquidityDelta;
-        require(liquidityToRemove < 0, "Invalid liquidity amount for removal");
-        bytes32 poolIdBytes32 = PoolId.unwrap(poolKey.toId());
-        require(liquidityAmountPerCampaign[msg.sender][campaignId][poolIdBytes32] > -liquidityToRemove,"You do not provide liquidity for this campaign");
-        liquidityAmountPerCampaign[msg.sender][campaignId][poolIdBytes32] -= liquidityToRemove;
-    }
-
-    function updateStateAfterAddLiquidity(IPoolManager.ModifyLiquidityParams calldata liquidityParams, PoolKey calldata poolKey) internal {
-        bytes32 poolIdBytes32 = PoolId.unwrap(poolKey.toId());
-        liquidityAmountPerCampaign[msg.sender][getCurrentCampaign(poolKey.toId())][poolIdBytes32] += liquidityParams.liquidityDelta;
-    }
-
-    function onlyAllowRecentering() internal returns(bool) {
-
-    }
-
-    function burnLastCampaignTokens() internal {
-
     }
 
     function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params,  bytes memory hookData)
