@@ -19,6 +19,7 @@ import {FidelityTokenFactory} from "../src/FidelityHook.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 import {SwapFeeLibrary} from "v4-core/src/libraries/SwapFeeLibrary.sol";
 import {ERC1155Holder} from "openzeppelin-contracts/token/ERC1155/utils/ERC1155Holder.sol";
+import "forge-std/console.sol";
 
 contract BrevisOGTest is Test, Deployers, ERC1155Holder {
     using PoolIdLibrary for PoolKey;
@@ -29,7 +30,8 @@ contract BrevisOGTest is Test, Deployers, ERC1155Holder {
     BrevisDataHandler brevisDataHandler;
     MockBrevisProof mockBrevisProof;
     bytes32 vkHash = 0x1234000000000000000000000000000000000000000000000000000000000000;
-
+    
+    
 
     function setUp() public {
         // Deploy v4-core
@@ -100,17 +102,25 @@ contract BrevisOGTest is Test, Deployers, ERC1155Holder {
         address[] memory users = new address[](1);
         address[] memory currencies = new address[](1);
         uint256[] memory volumes = new uint256[](1);
+        uint16[] memory discountsBps = new uint16[](1);
 
         users[0] = address(this);
-        currencies[0] =address(uint160(uint(keccak256(abi.encodePacked(currency0.toId())))));
+        // currencies[0] =address(uint160(uint(keccak256(abi.encodePacked(currency0.toId())))));
+        currencies[0] = Currency.unwrap(currency0);
+        volumes[0] = 3 ether; // Volume above the lower threshold
+        discountsBps[0] = 300;
 
-        volumes[0] = 1.5 ether; // Volume above the lower threshold
-
+        console.log(users[0]);
+        console.log(currencies[0]);
+        console.log(volumes[0]);
         bytes memory circuitOutput = abi.encodePacked(
             bytes20(users[0]),
             bytes20(currencies[0]),
             bytes32(volumes[0])
         );
+
+        brevisDataHandler.setDiscounts(PoolId.unwrap(key.toId()),currencies,volumes,discountsBps);
+
         uint256 discount = fidelityHook.getUserDiscount(address(this), PoolId.unwrap(key.toId()));
 
         assertEq(discount, 0); // check before
@@ -122,7 +132,7 @@ contract BrevisOGTest is Test, Deployers, ERC1155Holder {
 
         // Verify discount applied in FidelityHook
         discount = fidelityHook.getUserDiscount(address(this), PoolId.unwrap(key.toId()));
-        assertEq(discount, 10000); // Verify discount rate is set correctly
+        assertEq(discount, 300); // Verify discount rate is set correctly
     }
 
 }
