@@ -1,13 +1,14 @@
-# v4-template
-### **A template for writing Uniswap v4 Hooks 🦄**
+# FidelityHook Project 🦄
+### **Overview**
 
-[`Use this Template`](https://github.com/uniswapfoundation/v4-template/generate)
+The FidelityHook project aims to enhance the Uniswap V4 protocol by introducing dynamic fees and fidelity tokens. These tokens provide traders with a discount based on their trading volume, creating an incentive for higher trading activity within the pool. The project includes a smart contract (FidelityHook) that integrates with Uniswap V4, enabling these functionalities.
 
-1. The example hook [Counter.sol](src/Counter.sol) demonstrates the `beforeSwap()` and `afterSwap()` hooks
-2. The test template [Counter.t.sol](test/Counter.t.sol) preconfigures the v4 pool manager, test tokens, and test liquidity.
+### **Features**
 
-<details>
-<summary>Updating to v4-template:latest</summary>
+1. Dynamic Fees: Adjusts the swap fees based on trading volume, offering fee reductions to high-volume traders.
+2. Fidelity Tokens: Rewards traders with tokens based on their trading volume. These tokens can be used to earn fee discounts.
+3. Liquidity Management: Allows liquidity providers to add, remove, and recenter liquidity in the pool, with considerations for dynamic fee adjustments.
+4. Trading Campaigns: Implements time-bound trading campaigns during which trading volume is tracked, and fidelity tokens are issued accordingly.
 
 This template is actively maintained -- you can update the v4 dependencies, scripts, and helpers: 
 ```bash
