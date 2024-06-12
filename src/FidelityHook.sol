@@ -12,7 +12,6 @@ import {PoolTestBase} from "v4-core/src/test/PoolTestBase.sol";
 
 import {FidelityTokenFactory} from "./FidelityTokenFactory.sol";
 
-
 contract FidelityHook is BaseHook, PoolTestBase  {
     using PoolIdLibrary for PoolKey;
     using SwapFeeLibrary for uint24;
@@ -185,21 +184,6 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         );
     }
 
-    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
-        return Hooks.Permissions({
-            beforeInitialize: true,
-            afterInitialize: false,
-            beforeAddLiquidity: true,
-            afterAddLiquidity: false,
-            beforeRemoveLiquidity: true,
-            afterRemoveLiquidity: false,
-            beforeSwap: true,
-            afterSwap: true,
-            beforeDonate: false,
-            afterDonate: false
-        });
-    }
-
   function beforeInitialize(
         address,
         PoolKey calldata key,
@@ -299,13 +283,67 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         return BaseHook.beforeRemoveLiquidity.selector;
     }
 
-    function calculateSwapVolume(
-        IPoolManager.SwapParams calldata swapParams,
-        BalanceDelta delta
-    ) internal pure returns(uint256 volume) {
-        volume = swapParams.zeroForOne
-            ? uint256(int256(-delta.amount0()))
-            : uint256(int256(delta.amount0()));
+    function unlockCallback(bytes calldata rawData) external returns (bytes memory) {
+        require(msg.sender == address(manager));
+
+        CallbackData memory data = abi.decode(rawData, (CallbackData));
+
+        BalanceDelta delta;
+        int256 delta0;
+        int256 delta1;
+
+        delta = manager.modifyLiquidity(data.key, data.params, data.hookData);
+
+        (,, delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
+        (,, delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
+
+        if(keccak256(data.hookData) != keccak256(ZERO_BYTES)){
+            if (delta0 > 0) _take(data.key.currency0, data.sender, int128(delta0), data.withdrawTokens);
+            if (delta1 > 0) _take(data.key.currency1, data.sender, int128(delta1), data.withdrawTokens);
+
+            (int24 newLowerTick, int24 newUpperTick) = abi.decode(data.hookData, (int24, int24));
+            delta = manager.modifyLiquidity(
+                data.key,
+                IPoolManager.ModifyLiquidityParams({
+                    tickLower: newLowerTick,
+                    tickUpper: newUpperTick,
+                    liquidityDelta: -data.params.liquidityDelta
+                }),
+                data.hookData
+            );
+
+            (,, delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
+            (,, delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
+        }
+
+        if (delta0 < 0) _settle(data.key.currency0, data.sender, int128(delta0), data.settleUsingTransfer);
+        if (delta1 < 0) _settle(data.key.currency1, data.sender, int128(delta1), data.settleUsingTransfer);
+        if (delta0 > 0) _take(data.key.currency0, data.sender, int128(delta0), data.withdrawTokens);
+        if (delta1 > 0) _take(data.key.currency1, data.sender, int128(delta1), data.withdrawTokens);
+
+        return abi.encode(delta);
+    }
+
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
+        return Hooks.Permissions({
+            beforeInitialize: true,
+            afterInitialize: false,
+            beforeAddLiquidity: true,
+            afterAddLiquidity: false,
+            beforeRemoveLiquidity: true,
+            afterRemoveLiquidity: false,
+            beforeSwap: true,
+            afterSwap: true,
+            beforeDonate: false,
+            afterDonate: false
+        });
+    }
+
+    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params,  bytes memory hookData)
+        internal
+        returns (BalanceDelta delta)
+    {
+        delta = abi.decode(poolManager.unlock(abi.encode(CallbackData(msg.sender, key, params, hookData, true, true))), (BalanceDelta));
     }
 
     function updateFidelityTokens(address user, uint256 volume, PoolId pool) internal {
@@ -358,51 +396,13 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         campaignId = (block.timestamp - initTimestmamp) / timeInterval;
     }
 
-    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params,  bytes memory hookData)
-        internal
-        returns (BalanceDelta delta)
-    {
-        delta = abi.decode(poolManager.unlock(abi.encode(CallbackData(msg.sender, key, params, hookData, true, true))), (BalanceDelta));
+    function calculateSwapVolume(
+        IPoolManager.SwapParams calldata swapParams,
+        BalanceDelta delta
+    ) internal pure returns(uint256 volume) {
+        volume = swapParams.zeroForOne
+            ? uint256(int256(-delta.amount0()))
+            : uint256(int256(delta.amount0()));
     }
 
-    function unlockCallback(bytes calldata rawData) external returns (bytes memory) {
-        require(msg.sender == address(manager));
-
-        CallbackData memory data = abi.decode(rawData, (CallbackData));
-
-        BalanceDelta delta;
-        int256 delta0;
-        int256 delta1;
-
-        delta = manager.modifyLiquidity(data.key, data.params, data.hookData);
-
-        (,, delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
-        (,, delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
-
-        if(keccak256(data.hookData) != keccak256(ZERO_BYTES)){
-            if (delta0 > 0) _take(data.key.currency0, data.sender, int128(delta0), data.withdrawTokens);
-            if (delta1 > 0) _take(data.key.currency1, data.sender, int128(delta1), data.withdrawTokens);
-
-            (int24 newLowerTick, int24 newUpperTick) = abi.decode(data.hookData, (int24, int24));
-            delta = manager.modifyLiquidity(
-                data.key,
-                IPoolManager.ModifyLiquidityParams({
-                    tickLower: newLowerTick,
-                    tickUpper: newUpperTick,
-                    liquidityDelta: -data.params.liquidityDelta
-                }),
-                data.hookData
-            );
-
-            (,, delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
-            (,, delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
-        }
-
-        if (delta0 < 0) _settle(data.key.currency0, data.sender, int128(delta0), data.settleUsingTransfer);
-        if (delta1 < 0) _settle(data.key.currency1, data.sender, int128(delta1), data.settleUsingTransfer);
-        if (delta0 > 0) _take(data.key.currency0, data.sender, int128(delta0), data.withdrawTokens);
-        if (delta1 > 0) _take(data.key.currency1, data.sender, int128(delta1), data.withdrawTokens);
-
-        return abi.encode(delta);
-    }
 }
