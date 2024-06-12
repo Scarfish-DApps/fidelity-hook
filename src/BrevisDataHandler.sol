@@ -6,6 +6,7 @@ import "openzeppelin-contracts/access/Ownable.sol";
 import "brevis/sdk/apps/framework/BrevisApp.sol";
 import "brevis/sdk/interface/IBrevisProof.sol";
 import "./FidelityHook.sol";
+import "forge-std/console.sol";
 
 // Traders earn OG status if they have generated a certain amount of volume (defined by the pool initializer) in a certain amount of time before the calculation. 
 // They benefit from a discount on the trading fees until the next calculation.
@@ -41,6 +42,10 @@ contract BrevisDataHandler is BrevisApp, Ownable {
 
     bytes32[] public poolIds; // List of all pool IDs
 
+    function setHook(FidelityHook _hook) external onlyOwner {
+        hook = _hook;
+    }
+
     function handleProofResult(
         bytes32 /*_requestId*/,
         bytes32 _vkHash,
@@ -49,10 +54,24 @@ contract BrevisDataHandler is BrevisApp, Ownable {
         require(vkHash == _vkHash, "invalid vk");
 
         (address[] memory users, address[] memory currencies, uint256[] memory volumes) = decodeOutput(_circuitOutput);
+        console.logString("EEEEEEEEEEE....");
+        console.logAddress(users[0]);
+        console.logAddress(currencies[0]);
+        console.logUint(volumes[0]);
+        console.log("EEEEEEeeEEEEEE.......");
 
         /// TODO Call the main Hook contract here ...
         (address[] memory eligibleUsers, bytes32[] memory poolIds, uint16[] memory disounts) = getEligibleDiscounts(users, currencies, volumes);
-
+        console.logString("Eligible discounts: GOERGEEEEEE....");
+        console.logString("eligibleUsers:");
+        console.logAddress(eligibleUsers[0]);
+        console.logString("PoolId:");
+        console.logBytes32(poolIds[0]);
+        console.logString("currencies:");
+        console.logAddress(currencies[0]);
+        console.logString("discounts:");
+        console.logUint(disounts[0]);
+        console.log("GOERGEEEEEE.......");
         hook.setOgDiscounts(eligibleUsers, poolIds, disounts);
 
         // emit VolumeDataPushed(userAddr, currency, volume);
@@ -66,7 +85,9 @@ contract BrevisDataHandler is BrevisApp, Ownable {
         address[] memory users = new address[](numberOfRecords);
         address[] memory currencies = new address[](numberOfRecords);
         uint256[] memory volumes = new uint256[](numberOfRecords);
-        
+        // console.log(users);
+        // console.log(currencies);
+        // console.log(volumes);
         uint256 offset = 0;
         
         for (uint256 i = 0; i < numberOfRecords; i++) {
@@ -147,6 +168,13 @@ contract BrevisDataHandler is BrevisApp, Ownable {
                 }
             }
         }
+
+        console.logString("aaaaaaaaaaaaaaaa....");
+        console.logAddress(users[0]);
+        console.logAddress(currencies[0]);
+        console.logUint(volumes[0]);
+        console.logUint(count);
+        console.log("aaaaaaaaaaaaaaaaaa.......");
 
         address[] memory eligibleUsers = new address[](count);
         bytes32[] memory eligiblePoolIds = new bytes32[](count);
