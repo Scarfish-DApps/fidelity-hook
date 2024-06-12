@@ -1,44 +1,18 @@
 pragma solidity ^0.8.24;
 
 import {BaseHook} from "v4-periphery/BaseHook.sol";
-
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {SwapFeeLibrary} from "v4-core/src/libraries/SwapFeeLibrary.sol";
-import {IUnlockCallback} from "v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
 import {PoolTestBase} from "v4-core/src/test/PoolTestBase.sol";
-import {FidelityTokenFactory} from "./FidelityTokenFactory.sol";
-import {IERC20Minimal} from "v4-core/src/interfaces/external/IERC20Minimal.sol";
 
-/* I Characteristics of individual pools:
- * 1. Upper/lower trade volume threshold for fee reduction.
- *     1.1 Trade volume in currency 0 / currency 1. 
- * 2. Time interval for which trade volume is taken into consideration.
- *     2.1 Interval start is fixed for the entire pool.
- *          This should mean that the first liquidity position dictates
- *          the beginning and the end of one, let's call it, trading campaign.
- *     2.2 Interval starts with user's first trade. (seems harder to implement)
- *     NOTE - Fixed interval start may make more sense as there should be a
- *     locking mechanism for liquidity to not rug swapper who might want to
- *     achieve a certain fee reduction percentage, therefore investing lots
- *     of resources into raising the volume inside the pool - in this case,
- *     LPs lock their position for the duration of a trading campaign.
- * 3. Upper/lower fee limits.
- * 4. Infidelity penalty on/off. 
- *     NOTE - Could maybe integrate with Brevis to find out external volume of underlying pair tokens?
- * 5. Swap volume eligible for fee reduction RIGHT AWAY or accounted only in the following swap.
- *     NOTE -  
- *
- * II To be discussed:
- *     - Should new liquidity or new LPs affect the fee reduction amount because the new liquidity
- *     was not effectively used and therefore generated no fees for the LP? Meaning, new liquidity
- *     decreases the efficacy of fee reduction a user reached with its volume beforehand? Or does
- *     a new LP/liquidty submit to the fee reduction percentage a user has already reached?
- */
+import {FidelityTokenFactory} from "./FidelityTokenFactory.sol";
+
+
 contract FidelityHook is BaseHook, PoolTestBase  {
     using PoolIdLibrary for PoolKey;
     using SwapFeeLibrary for uint24;
@@ -46,6 +20,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
 
     error PoolNotInitialized();
     error SenderMustBeHook();
+    error MustUseDynamicFee();
 
     bytes internal constant ZERO_BYTES = bytes("");
 
@@ -64,7 +39,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
     }
 
     struct PoolConfig {
-        uint256 timeInterval;  // Represents the timestamp when the campaign will end ?
+        uint256 timeInterval;
         Bound volumeThreshold;
         Bound feeLimits;
         FidelityTokenFactory fidelityTokenFactory;
@@ -72,6 +47,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
     }
 
     mapping(PoolId => PoolConfig) public poolConfig;
+
     mapping(
         address => mapping(
         PoolId => mapping(
@@ -79,8 +55,6 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         int24 => mapping(
         uint256 => int256
     ))))) public userLiqInPoolPerTicksAndCampaign;
-
-    error MustUseDynamicFee();
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) PoolTestBase(_poolManager) {}
 
@@ -316,8 +290,8 @@ contract FidelityHook is BaseHook, PoolTestBase  {
 
     function beforeRemoveLiquidity(
         address sender,
-        PoolKey calldata poolKey,
-        IPoolManager.ModifyLiquidityParams calldata liquidityParams,
+        PoolKey calldata,
+        IPoolManager.ModifyLiquidityParams calldata,
         bytes calldata
     ) external virtual override returns (bytes4) {
         if (sender != address(this)) revert SenderMustBeHook();
@@ -328,7 +302,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
     function calculateSwapVolume(
         IPoolManager.SwapParams calldata swapParams,
         BalanceDelta delta
-    ) internal returns(uint256 volume) {
+    ) internal pure returns(uint256 volume) {
         volume = swapParams.zeroForOne
             ? uint256(int256(-delta.amount0()))
             : uint256(int256(delta.amount0()));
@@ -341,7 +315,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         fidelityTokenFactory.mint(user, currentCampaign, volume);
     }
 
-    function calculateFee(uint256 fidelityTokens, PoolId pool) internal returns(uint24 fee){
+    function calculateFee(uint256 fidelityTokens, PoolId pool) internal view returns(uint24 fee){
         (
             ,
             FidelityHook.Bound memory volThreshold,
