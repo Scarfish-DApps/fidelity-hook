@@ -215,7 +215,7 @@ contract FidelityHookTest is Test, Deployers, ERC1155Holder {
                 liquidityDelta: -100 ether
             }),
             0,
-            0,
+            -60,
             120
         );
 
@@ -228,7 +228,7 @@ contract FidelityHookTest is Test, Deployers, ERC1155Holder {
         fidelityHook.removeLiquidity(
             key,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: 0,
+                tickLower: -60,
                 tickUpper: 120,
                 liquidityDelta: -100 ether
             }),

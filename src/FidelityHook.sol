@@ -1,17 +1,48 @@
 pragma solidity ^0.8.24;
 
 import {BaseHook} from "v4-periphery/BaseHook.sol";
+
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {SwapFeeLibrary} from "v4-core/src/libraries/SwapFeeLibrary.sol";
+import {IUnlockCallback} from "v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
 import {PoolTestBase} from "v4-core/src/test/PoolTestBase.sol";
-
 import {FidelityTokenFactory} from "./FidelityTokenFactory.sol";
+import {IERC20Minimal} from "v4-core/src/interfaces/external/IERC20Minimal.sol";
 
+/* 
+ * Fidelity Hook rewards persistent traders of the integrating pool 
+ * with reduced fees.
+ * This is acheived through two features:
+ *  1. Tokenized fee discount obtained by swapping in the pool.
+ *  2. OG fee discount activated once you surpass a preset trading volume of a certain token across
+ *	    All existing pools of the chain(proof by Brevis)
+ *
+ *  At pool initialization, additional configuration values need to be passed:
+ *      - Lower and upper trading volume thresholds
+ *      - Lower and upper fee percentages
+ *      - Campaign duration
+ *      - (Optional) One or more OG discount entries specifying a token and its minimum volume threshold
+ *
+ *  Swappers get fidelity tokens(FT) equal to the trading volume that reduce the fee percentage paid.
+ *  If you have less FTs than the lower volume threshold, you pay the upper fee percentage.
+ *  Once FTs surpass the lower volume threshold, your fee percentage will linearly decrease up to a
+ *  maximum of the lower fee percentage - meaning that having more FTs than the upper volume threshold
+ *  will still only provide you with the lower fee percentage.
+ *
+ *  A campaign is defined as the period of time in which swappers get to benefit off their FTs
+ *  for fee percentage reduction, meaning each campaign will rotate to a new fidelity token.
+ *  LPs will have their liquidity locked until the end of the campaign with the possibility
+ *  for recentering in order to mitigate scenarios in which swappers might have to grind for 
+ *  better market fee percentages by paying higher ones initially. 
+ *
+ *  The OG fee discount activates once your overall swapping volume of a token
+ *  reaches the minimum threshold and is applied on top of the fee percentage dictated by FTs. 
+ */
 contract FidelityHook is BaseHook, PoolTestBase  {
     using PoolIdLibrary for PoolKey;
     using SwapFeeLibrary for uint24;
@@ -19,7 +50,6 @@ contract FidelityHook is BaseHook, PoolTestBase  {
 
     error PoolNotInitialized();
     error SenderMustBeHook();
-    error MustUseDynamicFee();
 
     bytes internal constant ZERO_BYTES = bytes("");
 
@@ -38,7 +68,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
     }
 
     struct PoolConfig {
-        uint256 timeInterval;
+        uint256 timeInterval;  
         Bound volumeThreshold;
         Bound feeLimits;
         FidelityTokenFactory fidelityTokenFactory;
@@ -46,7 +76,6 @@ contract FidelityHook is BaseHook, PoolTestBase  {
     }
 
     mapping(PoolId => PoolConfig) public poolConfig;
-
     mapping(
         address => mapping(
         PoolId => mapping(
@@ -55,8 +84,11 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         uint256 => int256
     ))))) public userLiqInPoolPerTicksAndCampaign;
 
+    error MustUseDynamicFee();
+
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) PoolTestBase(_poolManager) {}
 
+    // Only way to add liquidity into the pool as you would do through a router.
     function addLiquidity(
         PoolKey calldata key,
         IPoolManager.ModifyLiquidityParams memory params
@@ -87,6 +119,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         );
     }
 
+    // Only way to remove liquidity into the pool as you would do through a router.
     function removeLiquidity(
         PoolKey calldata key,
         IPoolManager.ModifyLiquidityParams memory params,
@@ -129,6 +162,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         );
     }
 
+    // Shifts position in another tick interval.
     function recenterPosition(
         PoolKey calldata key,
         IPoolManager.ModifyLiquidityParams memory params,
@@ -146,8 +180,12 @@ contract FidelityHook is BaseHook, PoolTestBase  {
 
         PoolId poolId = key.toId();
 
-        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
+        (uint160 sqrtPriceX96, int24 currentTick,,) = poolManager.getSlot0(poolId);
         if (sqrtPriceX96 == 0) revert PoolNotInitialized();
+        require(
+            newLowerTick <= currentTick && currentTick <= newUpperTick,
+            "Current tick not contained in new interval"
+        );
 
         int256 liqToRecenter = userLiqInPoolPerTicksAndCampaign
         [msg.sender]
@@ -184,7 +222,23 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         );
     }
 
-  function beforeInitialize(
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
+        return Hooks.Permissions({
+            beforeInitialize: true,
+            afterInitialize: false,
+            beforeAddLiquidity: true,
+            afterAddLiquidity: false,
+            beforeRemoveLiquidity: true,
+            afterRemoveLiquidity: false,
+            beforeSwap: true,
+            afterSwap: true,
+            beforeDonate: false,
+            afterDonate: false
+        });
+    }
+
+    // Initializes the pool configuration.
+    function beforeInitialize(
         address,
         PoolKey calldata key,
         uint160,
@@ -210,7 +264,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
 
         PoolId poolId = key.toId();
 
-        FidelityTokenFactory fidelityTokenFactory = new FidelityTokenFactory("TODO");
+        FidelityTokenFactory fidelityTokenFactory = new FidelityTokenFactory("FT");
 
         poolConfig[poolId] = PoolConfig({
             timeInterval: interval,
@@ -223,6 +277,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         return this.beforeInitialize.selector;
     }
 
+    // Update the swap fee based on the balance of fidelity tokens.
     function beforeSwap(
         address,
         PoolKey calldata key,
@@ -256,7 +311,7 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         uint256 volume = calculateSwapVolume(swapParams, delta);
 
         // Mint fidelity tokens based on user's trading volume
-        updateFidelityTokens(user, volume, poolId);
+        mintFidelityTokens(user, volume, poolId);
 
         return BaseHook.afterSwap.selector;
     }
@@ -274,8 +329,8 @@ contract FidelityHook is BaseHook, PoolTestBase  {
 
     function beforeRemoveLiquidity(
         address sender,
-        PoolKey calldata,
-        IPoolManager.ModifyLiquidityParams calldata,
+        PoolKey calldata poolKey,
+        IPoolManager.ModifyLiquidityParams calldata liquidityParams,
         bytes calldata
     ) external virtual override returns (bytes4) {
         if (sender != address(this)) revert SenderMustBeHook();
@@ -283,77 +338,25 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         return BaseHook.beforeRemoveLiquidity.selector;
     }
 
-    function unlockCallback(bytes calldata rawData) external returns (bytes memory) {
-        require(msg.sender == address(manager));
-
-        CallbackData memory data = abi.decode(rawData, (CallbackData));
-
-        BalanceDelta delta;
-        int256 delta0;
-        int256 delta1;
-
-        delta = manager.modifyLiquidity(data.key, data.params, data.hookData);
-
-        (,, delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
-        (,, delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
-
-        if(keccak256(data.hookData) != keccak256(ZERO_BYTES)){
-            if (delta0 > 0) _take(data.key.currency0, data.sender, int128(delta0), data.withdrawTokens);
-            if (delta1 > 0) _take(data.key.currency1, data.sender, int128(delta1), data.withdrawTokens);
-
-            (int24 newLowerTick, int24 newUpperTick) = abi.decode(data.hookData, (int24, int24));
-            delta = manager.modifyLiquidity(
-                data.key,
-                IPoolManager.ModifyLiquidityParams({
-                    tickLower: newLowerTick,
-                    tickUpper: newUpperTick,
-                    liquidityDelta: -data.params.liquidityDelta
-                }),
-                data.hookData
-            );
-
-            (,, delta0) = _fetchBalances(data.key.currency0, data.sender, address(this));
-            (,, delta1) = _fetchBalances(data.key.currency1, data.sender, address(this));
-        }
-
-        if (delta0 < 0) _settle(data.key.currency0, data.sender, int128(delta0), data.settleUsingTransfer);
-        if (delta1 < 0) _settle(data.key.currency1, data.sender, int128(delta1), data.settleUsingTransfer);
-        if (delta0 > 0) _take(data.key.currency0, data.sender, int128(delta0), data.withdrawTokens);
-        if (delta1 > 0) _take(data.key.currency1, data.sender, int128(delta1), data.withdrawTokens);
-
-        return abi.encode(delta);
+    // Volume is currently loosely defined as currency0 amount
+    // you’re swapping in and that you respectively get by swapping currency1.
+    function calculateSwapVolume(
+        IPoolManager.SwapParams calldata swapParams,
+        BalanceDelta delta
+    ) internal returns(uint256 volume) {
+        volume = swapParams.zeroForOne
+            ? uint256(int256(-delta.amount0()))
+            : uint256(int256(delta.amount0()));
     }
 
-    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
-        return Hooks.Permissions({
-            beforeInitialize: true,
-            afterInitialize: false,
-            beforeAddLiquidity: true,
-            afterAddLiquidity: false,
-            beforeRemoveLiquidity: true,
-            afterRemoveLiquidity: false,
-            beforeSwap: true,
-            afterSwap: true,
-            beforeDonate: false,
-            afterDonate: false
-        });
-    }
-
-    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params,  bytes memory hookData)
-        internal
-        returns (BalanceDelta delta)
-    {
-        delta = abi.decode(poolManager.unlock(abi.encode(CallbackData(msg.sender, key, params, hookData, true, true))), (BalanceDelta));
-    }
-
-    function updateFidelityTokens(address user, uint256 volume, PoolId pool) internal {
+    function mintFidelityTokens(address user, uint256 volume, PoolId pool) internal {
         PoolConfig memory config = poolConfig[pool];
         uint256 currentCampaign = getCurrentCampaign(pool);
         FidelityTokenFactory fidelityTokenFactory = config.fidelityTokenFactory;
         fidelityTokenFactory.mint(user, currentCampaign, volume);
     }
 
-    function calculateFee(uint256 fidelityTokens, PoolId pool) internal view returns(uint24 fee){
+    function calculateFee(uint256 fidelityTokens, PoolId pool) internal returns(uint24 fee){
         (
             ,
             FidelityHook.Bound memory volThreshold,
@@ -362,14 +365,15 @@ contract FidelityHook is BaseHook, PoolTestBase  {
             ,  
         ) = this.poolConfig(pool);
 
-        if (fidelityTokens < volThreshold.lower) {
+        if (fidelityTokens <= volThreshold.lower) {
             return uint24(feeLimits.upper);
         }
 
-        if (fidelityTokens > volThreshold.upper) {
+        if (fidelityTokens >= volThreshold.upper) {
             return uint24(feeLimits.lower);
         }
  
+        // If FT amount is between volume thresholds, calculate fee using linear interpolation
         uint256 deltaFee = feeLimits.upper - feeLimits.lower;
         uint256 feeDifference = (deltaFee * (fidelityTokens - volThreshold.lower))
             / (volThreshold.upper - volThreshold.lower);
@@ -396,13 +400,47 @@ contract FidelityHook is BaseHook, PoolTestBase  {
         campaignId = (block.timestamp - initTimestmamp) / timeInterval;
     }
 
-    function calculateSwapVolume(
-        IPoolManager.SwapParams calldata swapParams,
-        BalanceDelta delta
-    ) internal pure returns(uint256 volume) {
-        volume = swapParams.zeroForOne
-            ? uint256(int256(-delta.amount0()))
-            : uint256(int256(delta.amount0()));
+    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params,  bytes memory hookData)
+        internal
+        returns (BalanceDelta delta)
+    {
+        delta = abi.decode(poolManager.unlock(abi.encode(CallbackData(msg.sender, key, params, hookData, true, true))), (BalanceDelta));
     }
 
+    function unlockCallback(bytes calldata rawData) external returns (bytes memory) {
+        require(msg.sender == address(manager));
+
+        CallbackData memory data = abi.decode(rawData, (CallbackData));
+
+        BalanceDelta delta;
+
+        // When recentering, this will remove the user's liquidity from the pool
+        delta = manager.modifyLiquidity(data.key, data.params, data.hookData);
+
+        // Only populate hookData when recentering
+        if(keccak256(data.hookData) != keccak256(ZERO_BYTES)){
+            // Sends the liquidity back to user
+            if (delta.amount0() > 0) _take(data.key.currency0, data.sender, int128(delta.amount0()), data.withdrawTokens);
+            if (delta.amount1() > 0) _take(data.key.currency1, data.sender, int128(delta.amount1()), data.withdrawTokens);
+
+            (int24 newLowerTick, int24 newUpperTick) = abi.decode(data.hookData, (int24, int24));
+            // Adds liquidity in the new tick interval
+            delta = manager.modifyLiquidity(
+                data.key,
+                IPoolManager.ModifyLiquidityParams({
+                    tickLower: newLowerTick,
+                    tickUpper: newUpperTick,
+                    liquidityDelta: -data.params.liquidityDelta
+                }),
+                data.hookData
+            );
+        }
+
+        if (delta.amount0() < 0) _settle(data.key.currency0, data.sender, delta.amount0(), data.settleUsingTransfer);
+        if (delta.amount1() < 0) _settle(data.key.currency1, data.sender, delta.amount1(), data.settleUsingTransfer);
+        if (delta.amount0() > 0) _take(data.key.currency0, data.sender, delta.amount0(), data.withdrawTokens);
+        if (delta.amount1() > 0) _take(data.key.currency1, data.sender, delta.amount1(), data.withdrawTokens);
+
+        return abi.encode(delta);
+    }
 }
